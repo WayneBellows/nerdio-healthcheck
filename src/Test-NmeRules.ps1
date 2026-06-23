@@ -79,8 +79,17 @@ function Get-NmeFindings {
         $pooled = Test-NmeIsPooled -HostPool $hp
         $as = $hp.autoScale
 
+        # If a config read failed (permissions / API error), do not infer "disabled" -
+        # flag it for manual review and skip the dependent checks for this pool.
+        if (-not $as) {
+            $f.Add((New-Finding -Id 'hp-config-unavailable' -Area 'Auto-Scale' -Severity 'Manual' -Scope $name `
+                -Title 'Auto-scale config not retrieved' -Observation "Could not read auto-scale config for '$name' (permissions or API error)." `
+                -Recommendation 'Verify auto-scale settings for this host pool directly in NME.' `
+                -Rationale 'A failed read is not the same as a disabled feature - avoid acting on absent data.' -Reference $Rules.autoScale.ref -Observed $null))
+        }
+
         # Auto-scale enabled (pooled)
-        if ($pooled -and $Rules.autoScale.requireEnabledForPooled) {
+        if ($as -and $pooled -and $Rules.autoScale.requireEnabledForPooled) {
             if ($as.isEnabled -ne $true) {
                 $f.Add((New-Finding -Id 'hp-autoscale-off' -Area 'Auto-Scale' -Severity 'Required' -Scope $name `
                     -Title 'Auto-scale disabled' -Observation "Auto-scale is OFF on pooled host pool '$name'." `
@@ -94,7 +103,7 @@ function Get-NmeFindings {
         }
 
         # Auto-heal
-        if ($Rules.autoScale.requireAutoHeal) {
+        if ($as -and $Rules.autoScale.requireAutoHeal) {
             if ($as.autoHeal.enable -ne $true) {
                 $f.Add((New-Finding -Id 'hp-autoheal-off' -Area 'Auto-Scale' -Severity 'Recommended' -Scope $name `
                     -Title 'Auto-heal disabled' -Observation "Auto-heal broken hosts is OFF on '$name'." `
@@ -108,7 +117,7 @@ function Get-NmeFindings {
         }
 
         # Session time limits
-        if ($Rules.hostPool.recommendSessionTimeLimits -and $hp.sessionTimeout.isSessionTimeoutsEnabled -ne $true) {
+        if ($Rules.hostPool.recommendSessionTimeLimits -and $hp.sessionTimeout -and $hp.sessionTimeout.isSessionTimeoutsEnabled -ne $true) {
             $f.Add((New-Finding -Id 'hp-session-limits' -Area 'Host Pool Configuration' -Severity 'Recommended' -Scope $name `
                 -Title 'Session time limits not set' -Observation "Session time limits are not configured on '$name'." `
                 -Recommendation 'Configure session time limits (NME or GPO) to log off idle/disconnected sessions.' `
@@ -124,7 +133,7 @@ function Get-NmeFindings {
         }
 
         # FSLogix (pooled)
-        if ($pooled -and $Rules.hostPool.requireFslogixForPooled -and $hp.fslogix.enable -ne $true) {
+        if ($pooled -and $Rules.hostPool.requireFslogixForPooled -and $hp.fslogix -and $hp.fslogix.enable -ne $true) {
             $f.Add((New-Finding -Id 'hp-fslogix-off' -Area 'Host Pool Configuration' -Severity 'Required' -Scope $name `
                 -Title 'FSLogix not enabled' -Observation "FSLogix profile management is not enabled on pooled host pool '$name'." `
                 -Recommendation 'Enable an FSLogix profile and manage the FSLogix version.' `
@@ -140,7 +149,7 @@ function Get-NmeFindings {
         }
 
         # Friendly name
-        if ($Rules.hostPool.recommendFriendlyName) {
+        if ($Rules.hostPool.recommendFriendlyName -and $hp.wvd) {
             $fn = "$($hp.wvd.friendlyName)".Trim()
             if (-not $fn -or $fn -eq $name) {
                 $f.Add((New-Finding -Id 'hp-friendly-name' -Area 'Host Pool Configuration' -Severity 'Optional' -Scope $name `
@@ -167,7 +176,7 @@ function Get-NmeFindings {
         }
 
         # Availability zones (resilience)
-        if ($Rules.hostPool.recommendAvailabilityZones -and $hp.vmDeployment.useAvailabilityZones -ne $true) {
+        if ($Rules.hostPool.recommendAvailabilityZones -and $hp.vmDeployment -and $hp.vmDeployment.useAvailabilityZones -ne $true) {
             $f.Add((New-Finding -Id 'hp-avail-zones' -Area 'Host Pool Configuration' -Severity 'Optional' -Scope $name `
                 -Title 'Availability zones not used' -Observation "Host pool '$name' does not spread hosts across availability zones." `
                 -Recommendation 'Enable availability zones for the host pool where the region supports them.' `
@@ -175,7 +184,7 @@ function Get-NmeFindings {
         }
 
         # Time zone redirection (user experience)
-        if ($Rules.hostPool.recommendTimezoneRedirection -and $hp.vmDeployment.enableTimezoneRedirection -ne $true) {
+        if ($Rules.hostPool.recommendTimezoneRedirection -and $hp.vmDeployment -and $hp.vmDeployment.enableTimezoneRedirection -ne $true) {
             $f.Add((New-Finding -Id 'hp-tz-redirect' -Area 'Host Pool Configuration' -Severity 'Optional' -Scope $name `
                 -Title 'Time zone redirection off' -Observation "Time zone redirection is not enabled on '$name'." `
                 -Recommendation 'Enable time zone redirection so sessions follow the user''s local time zone.' `
@@ -194,9 +203,16 @@ function Get-NmeFindings {
         }
 
         # RDP Shortpath state (informational)
-        if ($Rules.hostPool.reportShortpath -and $null -ne $hp.vmDeployment.rdpShortpath) {
+        if ($Rules.hostPool.reportShortpath -and $hp.vmDeployment -and $null -ne $hp.vmDeployment.rdpShortpath) {
+            $spRaw = "$($hp.vmDeployment.rdpShortpath)"
+            $spText = switch ($spRaw) {
+                'DoNothing' { 'not managed by NME (inherits AVD default)' }
+                'Enabled'   { 'enabled' }
+                'Disabled'  { 'disabled' }
+                default     { $spRaw }
+            }
             $f.Add((New-Finding -Id 'hp-shortpath' -Area 'Host Pool Configuration' -Severity 'Info' -Scope $name `
-                -Title 'RDP Shortpath' -Observation "RDP Shortpath on '$name': $($hp.vmDeployment.rdpShortpath)." `
+                -Title 'RDP Shortpath' -Observation "RDP Shortpath on '$name': $spText." `
                 -Recommendation 'If Shortpath is in use, ensure the required firewall/UDP rules are in place (Microsoft scope).' `
                 -Rationale 'Shortpath improves connection quality over UDP; it depends on customer network/firewall configuration.' -Reference $Rules.hostPool.refShortpath -Observed $hp.vmDeployment.rdpShortpath))
         }
