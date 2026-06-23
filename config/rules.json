@@ -1,0 +1,82 @@
+{
+  "_comment": "Editable best-practice thresholds + reference links for the Nerdio Health Check. Tune here without touching code. Severities: Required (supportability/security must-fix), Recommended (best-practice), Optional (nice-to-have). 'Pass' and 'Info'/'Manual' are non-issues.",
+
+  "version": {
+    "knownLatestVersion": "",
+    "_knownLatestVersion_help": "Optional. Set to the current GA NME version (e.g. 7.7.3.4) to enable the N/N-1 supportability check. Leave blank to report version as informational only. Nerdio releases roughly every 8 weeks — update this when you refresh the tool.",
+    "ref": "https://nmw.zendesk.com/hc/en-us/articles/Nerdio-Manager-Support-Outside-of-Current-and-Prior-Version"
+  },
+
+  "autoScale": {
+    "requireEnabledForPooled": true,
+    "requireAutoHeal": true,
+    "cpuRamTargetLowPct": 60,
+    "cpuRamTargetHighPct": 80,
+    "flagValidationEnvInProduction": true,
+    "premiumStoppedDiskCostlyTypes": ["Premium_LRS", "PremiumV2_LRS"],
+    "ref": "https://nmw.zendesk.com/hc/en-us/articles/Enable-Dynamic-Host-Pool-Auto-scaling"
+  },
+
+  "hostPool": {
+    "recommendFriendlyName": true,
+    "recommendScheduledAgentUpdate": true,
+    "recommendSessionTimeLimits": true,
+    "requireFslogixForPooled": true,
+    "recommendPreStage": true,
+    "recommendAvailabilityZones": true,
+    "recommendTimezoneRedirection": true,
+    "flagPersonalAutoHealDeleteVm": true,
+    "reportShortpath": true,
+    "agentUpdateDefaultType": "Default",
+    "refAgentUpdate": "https://learn.microsoft.com/en-us/azure/virtual-desktop/scheduled-agent-updates",
+    "refValidationEnv": "https://learn.microsoft.com/en-us/azure/virtual-desktop/configure-validation-environment",
+    "refSessionLimits": "https://youtu.be/_ZfFIDU2I4g",
+    "refAutoHeal": "https://learn.microsoft.com/en-us/azure/virtual-desktop/session-host-status-health-checks",
+    "refPreStage": "https://youtu.be/aL7y2f2Iet0",
+    "refAvailabilityZones": "https://learn.microsoft.com/en-us/azure/virtual-desktop/create-host-pools-availability-zones",
+    "refShortpath": "https://learn.microsoft.com/en-us/azure/virtual-desktop/rdp-shortpath"
+  },
+
+  "appDelivery": {
+    "recommendIfAbsent": true,
+    "ref": "https://nmw.zendesk.com/hc/en-us/articles/Unified-Application-Management-Supported-Configurations"
+  },
+
+  "image": {
+    "recommendOsDiskOptimization": true,
+    "recommendComputeGallery": true,
+    "ref": "https://nmw.zendesk.com/hc/en-us/articles/How-can-I-automate-Windows-patching-on-desktop-images-and-session-hosts"
+  },
+
+  "notifications": {
+    "recommendConfigured": true,
+    "ref": "https://nmw.zendesk.com/hc/en-us/articles/Configure-Azure-Monitor-Alerts-for-AVD-Resources"
+  },
+
+  "rbac": {
+    "infoOnly": true
+  },
+
+  "score": {
+    "_help": "Overall health score = 100 - (weighted open findings per host pool x deductionPerUnit), clamped 0-100. Manual/Info/Pass do not deduct. Tune weights and deduction to taste.",
+    "weights": { "Required": 3, "Recommended": 1.5, "Optional": 0.5 },
+    "deductionPerUnit": 6,
+    "grades": [
+      { "min": 90, "label": "Excellent", "color": "#17B26A" },
+      { "min": 75, "label": "Good", "color": "#1E9DB8" },
+      { "min": 60, "label": "Fair", "color": "#F59E0B" },
+      { "min": 40, "label": "Needs Attention", "color": "#F97316" },
+      { "min": 0,  "label": "At Risk", "color": "#F04438" }
+    ]
+  },
+
+  "manualChecks": [
+    { "id": "manual-law-counters", "area": "Log Analytics (Premium)", "title": "Log Analytics counters & polling rate", "note": "Set User Input Delay Per Process polling to 300s+ (often 80-91% of ingestion cost). Not exposed by the REST API - review in NME and capture the monthly saving.", "ref": "https://nmw.zendesk.com" },
+    { "id": "manual-ri-analytics", "area": "Auto-Scale", "title": "Reserved Instance Analytics", "note": "Review RI Analytics (Autoscale > RI Analytics, last 30 days). For each 1 CPU-month of steady usage a reserved instance pays off. Not in the REST API.", "ref": "https://youtu.be/M3loAHtXGqQ" },
+    { "id": "manual-autoscale-history", "area": "Auto-Scale", "title": "30-day auto-scale history (CPU/RAM utilisation)", "note": "Check Autoscale > History (last 30 days). Aim for 60-80% on the higher of CPU/RAM. Below 60% = consider smaller VMs or more sessions per host. Telemetry, not in the REST API.", "ref": "https://youtu.be/aL7y2f2Iet0" },
+    { "id": "manual-insights", "area": "Nerdio Insights", "title": "Insights dashboards (Health, AVD, Workspaces, W365)", "note": "Review component health statuses, connection-health dashboard, login duration, FSLogix metrics, named-user vs MAU, and W365 dashlets. Visual telemetry, not in the REST API.", "ref": "https://nmw.zendesk.com" },
+    { "id": "manual-azure-monitor", "area": "Monitoring & Analytics", "title": "Azure Monitor / AVD Insights enablement", "note": "Verify Azure Monitor Insight is enabled, saving to a LAW, with 'Use Azure Monitor Agent' checked. Confirm in NME / Azure.", "ref": "https://nmw.zendesk.com" },
+    { "id": "manual-empty-hostpools", "area": "Coverage", "title": "Host pools with zero session hosts", "note": "This tool derives host pools from session-host records, so a pool with no hosts is not discoverable via the REST API. Confirm in the NME console that no empty pools were missed.", "ref": "" },
+    { "id": "manual-capacity-extender", "area": "Auto-Scale", "title": "Azure Capacity Extender (Premium)", "note": "If regional capacity/quota is a risk, review Azure Capacity Extender to allow alternative VM SKUs. Ensure sufficient quota for the additional SKUs. Not cleanly exposed by the REST API.", "ref": "" }
+  ]
+}

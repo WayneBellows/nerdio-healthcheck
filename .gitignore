@@ -1,0 +1,6 @@
+# Real credentials — NEVER commit. Plaintext secret lives here (option 4).
+config/credentials.local.json
+
+# Raw API dumps and generated reports
+output/
+!output/.gitkeep
