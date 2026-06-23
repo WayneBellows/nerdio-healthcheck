@@ -232,6 +232,35 @@ function Get-NmeFindings {
             -Rationale 'Managed app delivery reduces update effort and configuration drift.' -Reference $Rules.appDelivery.ref -Observed 0))
     }
 
+    # ---------- FSLogix storage auto-scaling ----------
+    if ($Rules.storage.recommendAzureFilesAutoScale) {
+        foreach ($loc in @($env.storageLocations)) {
+            $pools = ($loc.hostPools -join ', ')
+            if ($loc.type -eq 'AzureFiles') {
+                if ($loc.resolved -and $loc.isEnabled -eq $true) {
+                    $f.Add((New-Finding -Id 'storage-autoscale-on' -Area 'Storage' -Severity 'Pass' -Scope "$($loc.account)/$($loc.share)" `
+                        -Title 'Azure Files auto-scale enabled' -Observation "Storage auto-scale is ON for \\$($loc.account)\$($loc.share) (used by: $pools)." `
+                        -Recommendation 'No action.' -Rationale 'Share scales with demand, avoiding quota exhaustion and over-provisioning.' -Reference $Rules.storage.ref -Observed $true))
+                } elseif ($loc.resolved -and $loc.isEnabled -ne $true) {
+                    $f.Add((New-Finding -Id 'storage-autoscale-off' -Area 'Storage' -Severity 'Recommended' -Scope "$($loc.account)/$($loc.share)" `
+                        -Title 'Azure Files auto-scale disabled' -Observation "FSLogix profiles on \\$($loc.account)\$($loc.share) (used by: $pools); storage auto-scale is OFF." `
+                        -Recommendation 'Enable Azure Files auto-scale so the share grows/shrinks with demand.' `
+                        -Rationale 'Avoids profile-share quota exhaustion (logon failures) while controlling cost.' -Reference $Rules.storage.ref -Observed $false))
+                } else {
+                    $f.Add((New-Finding -Id 'storage-autoscale-verify' -Area 'Storage' -Severity 'Manual' -Scope "$($loc.account)/$($loc.share)" `
+                        -Title 'Verify Azure Files auto-scale' -Observation "FSLogix profiles on Azure Files \\$($loc.account)\$($loc.share) (used by: $pools). Auto-scale state could not be read via the API (share may not be onboarded to NME storage management)." `
+                        -Recommendation 'In NME, add this share to storage management and enable auto-scale (Premium).' `
+                        -Rationale 'Auto-scale avoids profile-share quota exhaustion and controls cost.' -Reference $Rules.storage.ref -Observed $null))
+                }
+            } elseif ($loc.type -eq 'Other' -and $loc.account) {
+                $f.Add((New-Finding -Id 'storage-non-azurefiles' -Area 'Storage' -Severity 'Info' -Scope "$($loc.account)/$($loc.share)" `
+                    -Title 'FSLogix on non-Azure-Files storage' -Observation "FSLogix profiles on \\$($loc.account)\$($loc.share) (used by: $pools) - not Azure Files (could be ANF, on-prem or other)." `
+                    -Recommendation 'If this is Azure NetApp Files, review ANF volume auto-scale; otherwise confirm the storage scales for the user base.' `
+                    -Rationale 'Profile storage must scale with demand regardless of platform.' -Reference $Rules.storage.ref -Observed $loc.type))
+            }
+        }
+    }
+
     # ---------- Notifications ----------
     if ($Rules.notifications.recommendConfigured) {
         $hasNotif = ($env.notifActions.Count + $env.notifConditions.Count + $env.notifWebhooks.Count) -gt 0

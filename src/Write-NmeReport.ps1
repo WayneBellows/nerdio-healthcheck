@@ -132,6 +132,31 @@ function Write-NmeReport {
   .ov .k{font-size:12px; color:var(--slate-500); text-transform:uppercase; letter-spacing:0.04em;}
   .ov .v{font-family:var(--font-sans); font-weight:700; font-size:20px; color:var(--slate-800); margin-top:4px;}
 
+  /* View tabs */
+  .tabs{display:flex; gap:18px; margin:4px 0 22px; border-bottom:1px solid var(--border);}
+  .tab{padding:9px 2px; cursor:pointer; font-family:var(--font-sans); font-weight:600; font-size:14px;
+       color:var(--slate-500); background:none; border:none; border-bottom:2px solid transparent; margin-bottom:-1px;}
+  .tab.active{color:var(--teal-600); border-bottom-color:var(--teal-500);}
+  .tab:hover{color:var(--teal-600);}
+
+  /* Per-host-pool view */
+  .pool{background:var(--bg-surface); border:1px solid var(--border); border-radius:var(--radius-lg);
+        box-shadow:var(--shadow-sm); margin-bottom:16px; overflow:hidden;}
+  .pool-hd{display:flex; align-items:center; justify-content:space-between; gap:12px;
+           padding:13px 18px; border-bottom:1px solid var(--border); background:var(--slate-50);}
+  .pool-hd h3{font-size:17px; font-weight:700;}
+  .pool-hd .mc{display:flex; gap:6px; flex-wrap:wrap;}
+  .minicount{font-family:var(--font-sans); font-weight:700; font-size:11px; padding:2px 9px; border-radius:var(--radius-full);}
+  .pool-body{padding:4px 18px 10px;}
+  .pool-body .none{color:var(--success-500); font-size:13px; padding:12px 0; font-weight:600;}
+  .frow{display:flex; gap:11px; padding:11px 0; border-bottom:1px solid var(--slate-100); align-items:flex-start;}
+  .frow:last-child{border-bottom:none;}
+  .frow .sevdot{flex:0 0 auto; width:10px; height:10px; border-radius:50%; margin-top:5px;}
+  .frow .ftext{flex:1;}
+  .frow .ftext .ft{font-family:var(--font-sans); font-weight:600; font-size:14px; color:var(--slate-800);}
+  .frow .ftext .fr{font-size:13px; color:var(--slate-600); margin-top:2px;}
+  .frow .fsev{flex:0 0 auto;}
+
   /* Section (collapsible via <details>) */
   details.sec{margin-bottom:32px; scroll-margin-top:16px;}
   details.sec > summary{list-style:none; cursor:pointer; display:flex; align-items:center; gap:10px;
@@ -246,7 +271,16 @@ function Write-NmeReport {
 </div>
 "@)
 
-    # ---- Findings grouped by severity ----
+    # ---- View tabs ----
+    $null = $sb.AppendLine(@"
+<div class="tabs">
+  <button class="tab active" data-v="sev" onclick="showView('sev')">By Severity</button>
+  <button class="tab" data-v="pool" onclick="showView('pool')">By Host Pool</button>
+</div>
+"@)
+
+    # ---- View 1: findings grouped by severity ----
+    $null = $sb.AppendLine('<div id="view-severity">')
     $sevOrder = 'Required', 'Recommended', 'Optional', 'Manual', 'Pass', 'Info'
     $sevDesc = @{
         Required    = 'Must fix for supportability or security.'
@@ -312,6 +346,54 @@ $bodyTop
         }
         $null = $sb.AppendLine('</details>')
     }
+    $null = $sb.AppendLine('</div>')   # end view-severity
+
+    # ---- View 2: findings grouped by host pool ----
+    $null = $sb.AppendLine('<div id="view-pool" style="display:none">')
+
+    # Scope ordering: each host pool (in natural order), then any other scopes, then Environment.
+    $poolNames = @($Environment.hostPools | ForEach-Object { "$($_.ref.name)" })
+    $allScopes = @($Findings | ForEach-Object { "$($_.scope)" } | Select-Object -Unique)
+    $otherScopes = @($allScopes | Where-Object { $_ -ne 'Environment' -and $poolNames -notcontains $_ })
+    $scopeOrder = @($poolNames) + @($otherScopes | Sort-Object)
+    if ($allScopes -contains 'Environment') { $scopeOrder += 'Environment' }
+
+    foreach ($scope in $scopeOrder) {
+        $scopeItems = @($Findings | Where-Object { "$($_.scope)" -eq $scope })
+        # mini severity counts for this scope
+        $mc = ''
+        foreach ($sev in 'Required', 'Recommended', 'Optional', 'Manual', 'Pass', 'Info') {
+            $c = @($scopeItems | Where-Object severity -eq $sev).Count
+            if ($c -gt 0) {
+                $mm = $sevMeta[$sev]
+                $mc += "<span class='minicount' style='background:$($mm.bg);color:$($mm.fg)'>$c $($mm.label)</span>"
+            }
+        }
+        $null = $sb.AppendLine(@"
+<div class="pool">
+  <div class="pool-hd"><h3>$(ConvertTo-HtmlText $scope)</h3><div class="mc">$mc</div></div>
+  <div class="pool-body">
+"@)
+        # actionable items first; if none, show an all-clear note
+        $actionable = @($scopeItems | Where-Object severity -in 'Required', 'Recommended', 'Optional', 'Manual')
+        if ($actionable.Count -eq 0) {
+            $null = $sb.AppendLine('<div class="none">No actionable findings &mdash; aligned with best practice.</div>')
+        }
+        $svRank = @{ Required = 0; Recommended = 1; Optional = 2; Manual = 3; Pass = 4; Info = 5 }
+        foreach ($it in ($scopeItems | Sort-Object @{ E = { $svRank["$($_.severity)"] } }, title)) {
+            $mm = $sevMeta["$($it.severity)"]
+            $rec = if ($it.recommendation) { ConvertTo-HtmlText $it.recommendation } else { ConvertTo-HtmlText $it.observation }
+            $null = $sb.AppendLine(@"
+    <div class="frow">
+      <span class="sevdot" style="background:$($mm.dot)"></span>
+      <div class="ftext"><div class="ft">$(ConvertTo-HtmlText $it.title)</div><div class="fr">$rec</div></div>
+      <span class="fsev"><span class="badge" style="background:$($mm.bg);color:$($mm.fg)">$($mm.label)</span></span>
+    </div>
+"@)
+        }
+        $null = $sb.AppendLine('  </div></div>')
+    }
+    $null = $sb.AppendLine('</div>')   # end view-pool
 
     # ---- Footer ----
     $null = $sb.AppendLine(@"
@@ -322,9 +404,16 @@ $bodyTop
 </footer>
 </div>
 <script>
-  // Ensure a summary-tile click expands its target section even if collapsed.
+  // Toggle between the By Severity and By Host Pool views.
+  function showView(v){
+    document.getElementById('view-severity').style.display = (v === 'sev') ? '' : 'none';
+    document.getElementById('view-pool').style.display     = (v === 'pool') ? '' : 'none';
+    document.querySelectorAll('.tab').forEach(function(t){ t.classList.toggle('active', t.dataset.v === v); });
+  }
+  // Summary-tile clicks jump to the severity view; expand the target section if collapsed.
   document.querySelectorAll('a.card').forEach(function(a){
     a.addEventListener('click', function(){
+      showView('sev');
       var t = document.querySelector(a.getAttribute('href'));
       if (t && t.tagName === 'DETAILS') { t.open = true; }
     });
