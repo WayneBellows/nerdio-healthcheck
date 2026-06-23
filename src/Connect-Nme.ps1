@@ -58,7 +58,8 @@ function Invoke-NmeApi {
     param(
         [Parameter(Mandatory)][psobject]$Session,
         [Parameter(Mandatory)][string]$Path,        # e.g. /api/v1/deployment/current
-        [hashtable]$Query
+        [hashtable]$Query,
+        [switch]$Quiet                              # suppress failure warnings (expected 404s when probing)
     )
     $uri = $Session.BaseUrl + ($Path.StartsWith('/') ? $Path : "/$Path")
     if ($Query -and $Query.Count) {
@@ -74,7 +75,9 @@ function Invoke-NmeApi {
     catch {
         $status = $null
         try { $status = [int]$_.Exception.Response.StatusCode } catch {}
-        Write-Warning "GET $Path failed$(if($status){" (HTTP $status)"}): $($_.Exception.Message)"
+        if (-not $Quiet) {
+            Write-Warning "GET $Path failed$(if($status){" (HTTP $status)"}): $($_.Exception.Message)"
+        }
         return $null
     }
 }

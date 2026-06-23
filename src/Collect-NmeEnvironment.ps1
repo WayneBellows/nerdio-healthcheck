@@ -54,6 +54,67 @@ function Get-NmeHostPoolDetail {
     }
 }
 
+function Get-NmeStorageLocations {
+    <#
+      Derive FSLogix storage locations from host-pool FSLogix config (the API has no
+      storage list endpoint). For Azure Files shares, best-effort resolve the auto-scale
+      state by probing the auto-scale endpoint across the known subscriptions/resource
+      groups (the FSLogix path gives account+share but not subscription/RG).
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][psobject]$Session, [array]$HostPools, [array]$ResourceGroups)
+
+    # Build subscription -> resource groups map for probing.
+    $subRgs = @{}
+    foreach ($rg in $ResourceGroups) {
+        if (-not $subRgs.ContainsKey($rg.subscriptionId)) { $subRgs[$rg.subscriptionId] = [System.Collections.Generic.List[string]]::new() }
+        $subRgs[$rg.subscriptionId].Add($rg.name)
+    }
+
+    $locations = @{}   # key "account/share" -> object
+    foreach ($hp in $HostPools) {
+        $cfg = $hp.fslogix.effectiveConfig
+        if (-not $cfg) { continue }
+        foreach ($path in @($cfg.profilesPath, $cfg.officeContainerPath, $cfg.secondaryProfilesPath, $cfg.secondaryOfficeContainerPath)) {
+            if ([string]::IsNullOrWhiteSpace("$path")) { continue }
+            $p = "$path"
+            $type = 'Other'; $account = ''; $share = ''
+            if ($p -match '^\\\\([^.\\]+)\.file\.core\.windows\.net\\(.+)$') {
+                $type = 'AzureFiles'; $account = $Matches[1]; $share = ($Matches[2] -replace '\\.*$', '')
+            } elseif ($p -match '^\\\\([^\\]+)\\(.+)$') {
+                $type = 'Other'; $account = $Matches[1]; $share = $Matches[2]
+            }
+            $key = "$account/$share"
+            if ($locations.ContainsKey($key)) {
+                if ($locations[$key].hostPools -notcontains $hp.ref.name) { $locations[$key].hostPools += $hp.ref.name }
+                continue
+            }
+            $locations[$key] = [pscustomobject]@{
+                type = $type; account = $account; share = $share; path = $p
+                hostPools = @($hp.ref.name)
+                resolved = $false; isEnabled = $null; subscriptionId = $null; resourceGroup = $null
+            }
+        }
+    }
+
+    # Best-effort resolve Azure Files auto-scale state (bounded probe; 404s are expected).
+    foreach ($loc in $locations.Values) {
+        if ($loc.type -ne 'AzureFiles') { continue }
+        :found foreach ($sub in $subRgs.Keys) {
+            foreach ($rg in $subRgs[$sub]) {
+                $r = Invoke-NmeApi -Session $Session -Quiet `
+                    -Path "/api/v1/storage/azure-files/$sub/$rg/$($loc.account)/$($loc.share)/auto-scale"
+                if ($null -ne $r) {
+                    $loc.resolved = $true; $loc.isEnabled = $r.isEnabled
+                    $loc.subscriptionId = $sub; $loc.resourceGroup = $rg
+                    break found
+                }
+            }
+        }
+    }
+    return $locations.Values | Sort-Object account, share
+}
+
 function Get-NmeEnvironment {
     [CmdletBinding()]
     param([Parameter(Mandatory)][psobject]$Session)
@@ -74,6 +135,10 @@ function Get-NmeEnvironment {
         Write-Host "    - $($p.name)"
         Get-NmeHostPoolDetail -Session $Session -Pool $p
     }
+
+    Write-Host '  FSLogix storage locations (+ auto-scale resolve)'
+    [array]$storageLocations = Get-NmeStorageLocations -Session $Session -HostPools $hostPools -ResourceGroups $resourceGroups
+    Write-Host "    found $($storageLocations.Count) storage location(s)"
 
     Write-Host '  images / apps / scripted actions / profiles'
     [array]$desktopImages   = Invoke-NmeApi -Session $Session -Path '/api/v1/desktop-image'
@@ -100,6 +165,7 @@ function Get-NmeEnvironment {
         workspaces         = $workspaces
         resourceGroups     = $resourceGroups
         hostPools          = @($hostPools)
+        storageLocations   = @($storageLocations)
         desktopImages      = $desktopImages
         scriptedActions    = $scriptedActions
         scriptedGroups     = $scriptedGroups
