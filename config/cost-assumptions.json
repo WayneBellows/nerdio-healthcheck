@@ -1,0 +1,60 @@
+{
+  "_comment": "Tunable assumptions for the Cost Optimisation analysis. All figures feed the Modelled (Tier 3) estimates and are listed in the report per play. Tune here without touching code.",
+
+  "currency": "USD",
+  "hybridBenefit": true,
+  "_hybridBenefit_help": "true = price compute at the base (Linux) rate, i.e. assumes Azure Hybrid Benefit covers the Windows licence. The Windows PAYG rate is always fetched too and shown as the upper bound when relevant.",
+
+  "hoursPerMonth": 730,
+  "workingHours": {
+    "hoursPerDay": 12,
+    "daysPerWeek": 5,
+    "_help": "Assumed business window when no measured data exists. 12h x 5d = ~260 active hours/month; the remaining ~470 hours are the off-hours savings window."
+  },
+  "workdaysPerMonth": 21.7,
+  "conservativeFactor": 0.7,
+
+  "autoScale": {
+    "recommendedMinActiveWithStartOnConnect": 0,
+    "recommendedMinActiveWithoutStartOnConnect": 1
+  },
+
+  "rollingDrain": {
+    "hoursSavedPerHostPerDayLow": 1.0,
+    "hoursSavedPerHostPerDayTypical": 2.0,
+    "drainingHostsFraction": 0.5,
+    "_help": "Rolling drain lets scaling hosts empty and power off sooner. Modelled as 1-2 hours of runtime saved per scaling host per workday; drainingHostsFraction is the share of scaling hosts assumed to be draining at any point."
+  },
+
+  "preStage": {
+    "recommendedReadyFraction": 0.25,
+    "leadHours": 1.0,
+    "_help": "Flags pre-staging more than recommendedReadyFraction of pool capacity; excess hosts x leadHours x workdays priced as avoidable runtime."
+  },
+
+  "law": {
+    "targetSampleSecondsConservative": 300,
+    "targetSampleSecondsTypical": 900,
+    "currentSampleSecondsDefault": 60,
+    "uidShareOfIngestionLow": 0.80,
+    "uidShareOfIngestionTypical": 0.91,
+    "uidGbPerHostMonthLow": 2,
+    "uidGbPerHostMonthTypical": 8,
+    "_help": "User Input Delay per Process/Session counters commonly account for 80-91% of AVD Log Analytics ingestion at the default 60s sample rate. Raising the interval to 300-1800s (or disabling the per-process counter) cuts that near-proportionally. uidGbPerHostMonth* is the weakest fallback when neither Azure query data nor observed data exists."
+  },
+
+  "storage": {
+    "provisionedHeadroomFactor": 1.2,
+    "_help": "When Azure enrichment supplies provisioned vs used GiB for Premium Files shares, savings = (provisioned - used x headroom) x per-GiB rate."
+  },
+
+  "pricing": {
+    "cacheTtlDays": 7,
+    "maxPagesPerQuery": 10,
+    "fallbackRates": {
+      "_help": "Used only when the Azure Retail Prices API is unreachable AND the cache is cold. Always flagged in the report when used. USD, eastus-ish ballpark.",
+      "lawIngestionPerGb": 2.30,
+      "diskMonthly": { "P10": 17.92, "P15": 34.56, "P20": 66.56, "P30": 122.88, "E10": 9.60, "E15": 19.20, "E20": 38.40, "E30": 76.80, "S10": 5.89, "S15": 11.33, "S20": 21.76, "S30": 40.96 }
+    }
+  }
+}

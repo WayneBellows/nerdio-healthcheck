@@ -4,3 +4,10 @@ config/credentials.local.json
 # Raw API dumps and generated reports
 output/
 !output/.gitkeep
+
+# Cost analysis: local pricing cache, customer observed data + screenshot evidence
+config/pricing-cache.json
+config/observed-data.local.json
+config/observed-data*.json
+!config/observed-data.example.json
+evidence/

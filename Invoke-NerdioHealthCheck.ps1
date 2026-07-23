@@ -6,8 +6,20 @@
   prints version + edition posture. Later phases add collectors, rules and HTML report.
 .PARAMETER ConfigPath
   Path to credentials JSON. Defaults to config/credentials.local.json.
+.PARAMETER CostAnalysis
+  Adds the Cost Optimisation analysis (Phase 2.5) and report section: quantified
+  savings plays with evidence tiers (Measured / Enriched / Modelled).
+.PARAMETER ObservedData
+  Path to a Tier-1 observed-data JSON (see config/observed-data.example.json) with
+  figures captured from the NME console. config/observed-data.local.json is used
+  automatically when present.
+.PARAMETER SkipAzureEnrichment
+  Skips the optional read-only az CLI enrichment (Azure Advisor, disk SKUs,
+  Log Analytics ingestion by counter).
 .EXAMPLE
   pwsh ./Invoke-NerdioHealthCheck.ps1
+.EXAMPLE
+  pwsh ./Invoke-NerdioHealthCheck.ps1 -Report -CustomerName "Acme Corp" -CostAnalysis
 #>
 [CmdletBinding()]
 param(
@@ -16,7 +28,10 @@ param(
     [switch]$Assess,         # Phase 2: run rules engine over collected data, print findings
     [switch]$Report,         # Phase 3: render HTML report from findings
     [string]$CustomerName = 'Customer',
-    [string]$FromFile        # Assess an existing output/raw JSON instead of a live collection
+    [string]$FromFile,       # Assess an existing output/raw JSON instead of a live collection
+    [switch]$CostAnalysis,   # Phase 2.5: quantify cost-optimisation plays into the report
+    [string]$ObservedData,   # Tier 1 measured inputs (see config/observed-data.example.json)
+    [switch]$SkipAzureEnrichment   # Skip the optional az CLI enrichment (Tier 2)
 )
 
 $ErrorActionPreference = 'Stop'
@@ -24,6 +39,11 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'src\Collect-NmeEnvironment.ps1')
 . (Join-Path $PSScriptRoot 'src\Test-NmeRules.ps1')
 . (Join-Path $PSScriptRoot 'src\Write-NmeReport.ps1')
+. (Join-Path $PSScriptRoot 'src\cost\Get-NmePricing.ps1')
+. (Join-Path $PSScriptRoot 'src\cost\Get-NmeObservedData.ps1')
+. (Join-Path $PSScriptRoot 'src\cost\Get-NmeAzureEnrichment.ps1')
+. (Join-Path $PSScriptRoot 'src\cost\Measure-NmeCostSavings.ps1')
+. (Join-Path $PSScriptRoot 'src\cost\Write-NmeCostSection.ps1')
 
 $env = $null
 
@@ -91,12 +111,62 @@ if (($Assess -or $Report -or $FromFile) -and $env) {
 
     $stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $outDir = Join-Path $PSScriptRoot 'output'
+
+    # ---- Phase 2.5: cost optimisation analysis (optional) ----
+    $costAnalysisResult = $null
+    if ($CostAnalysis) {
+        Write-Host "`n=== Phase 2.5: cost optimisation analysis ===" -ForegroundColor Cyan
+        $assumptions = Get-Content (Join-Path $PSScriptRoot 'config\cost-assumptions.json') -Raw | ConvertFrom-Json
+
+        $observed = $null
+        $obsPath = $ObservedData
+        if (-not $obsPath) {
+            $default = Join-Path $PSScriptRoot 'config\observed-data.local.json'
+            if (Test-Path $default) { $obsPath = $default }
+        }
+        if ($obsPath) {
+            $observed = Get-NmeObservedData -Path $obsPath
+            if ($observed) { Write-Host "  Observed data loaded from $obsPath" -ForegroundColor Green }
+        }
+
+        $enrichment = $null
+        if (-not $SkipAzureEnrichment) { $enrichment = Get-NmeAzureEnrichment -Environment $env }
+
+        $pricingCache = Get-NmePricingCache
+        $costAnalysisResult = Get-NmeCostAnalysis -Environment $env -Assumptions $assumptions `
+            -Observed $observed -Enrichment $enrichment -PricingCache $pricingCache
+        Save-NmePricingCache -Cache $pricingCache
+
+        $tot = $costAnalysisResult.totals
+        Write-Host ("`nEstimated savings opportunity: {0:N0}-{1:N0} {2}/month ({3} quantified play(s))" -f `
+            $tot.monthlyLow, $tot.monthlyTypical, $costAnalysisResult.currency, $tot.quantifiedPlays) -ForegroundColor Cyan
+        foreach ($p in ($costAnalysisResult.plays | Where-Object quantified | Sort-Object monthlyTypical -Descending)) {
+            Write-Host ("  {0,-26} {1,-20} [{2}] {3,10:N2}-{4,10:N2} /mo" -f $p.id, $p.scope, $p.tier, $p.monthlyLow, $p.monthlyTypical)
+        }
+        foreach ($p in ($costAnalysisResult.plays | Where-Object { -not $_.quantified })) {
+            Write-Host ("  {0,-26} {1,-20} [{2}] review in console" -f $p.id, $p.scope, $p.tier) -ForegroundColor DarkGray
+        }
+
+        $costFile = Join-Path $outDir "cost-analysis-$stamp.json"
+        $costAnalysisResult | Select-Object * -ExcludeProperty screenshots | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $costFile -Encoding UTF8
+        Write-Host "Cost analysis saved: $costFile" -ForegroundColor Green
+
+        # Surface the section from the findings views without touching the health score.
+        if ($tot.quantifiedPlays -gt 0) {
+            $findings += New-Finding -Id 'cost-summary' -Area 'Cost Optimisation' -Severity 'Info' -Scope 'Environment' `
+                -Title 'Cost optimisation opportunities identified' `
+                -Observation ("Estimated savings opportunity of {0:N0}-{1:N0} {2}/month across {3} quantified play(s)." -f $tot.monthlyLow, $tot.monthlyTypical, $costAnalysisResult.currency, $tot.quantifiedPlays) `
+                -Recommendation 'See the Cost Optimisation section of this report for the per-play breakdown, assumptions and evidence.' `
+                -Rationale 'Quantified savings support the business case for Nerdio feature adoption.' -Reference '#sec-cost' -Observed $tot
+        }
+    }
+
     $findingsFile = Join-Path $outDir "findings-$stamp.json"
     $findings | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $findingsFile -Encoding UTF8
     Write-Host "`nFindings saved: $findingsFile" -ForegroundColor Green
 
     if ($Report -or $FromFile) {
         Write-Host "`n=== Phase 3: report ===" -ForegroundColor Cyan
-        Write-NmeReport -Environment $env -Findings $findings -CustomerName $CustomerName | Out-Null
+        Write-NmeReport -Environment $env -Findings $findings -CustomerName $CustomerName -CostAnalysis $costAnalysisResult | Out-Null
     }
 }

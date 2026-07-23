@@ -30,7 +30,8 @@ function Write-NmeReport {
         [Parameter(Mandatory)][array]$Findings,
         [string]$CustomerName = 'Customer',
         [string]$OutPath,
-        [string]$LogoPath
+        [string]$LogoPath,
+        [psobject]$CostAnalysis
     )
 
     # Prefer the vendored logo (self-contained repo); fall back to the design system.
@@ -270,6 +271,11 @@ function Write-NmeReport {
   <div class="ov"><div class="k">Scripted Actions</div><div class="v">$($passEnv.scriptedActions.Count)</div></div>
 </div>
 "@)
+
+    # ---- Cost Optimisation section (optional) ----
+    if ($CostAnalysis) {
+        $null = $sb.AppendLine((Write-NmeCostSection -CostAnalysis $CostAnalysis -CustomerName $CustomerName))
+    }
 
     # ---- View tabs ----
     $null = $sb.AppendLine(@"

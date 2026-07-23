@@ -1,0 +1,33 @@
+{
+  "_comment": "Tier 1 'Measured' inputs captured from the NME console (no API exists for these). Copy to observed-data.local.json, fill in what you have, and pass with -ObservedData. Everything is optional - missing values fall back to modelled estimates. Screenshot paths resolve relative to this file; keep images under ~1.5 MB (PNG/JPG).",
+
+  "capturedAt": "2026-07-23",
+  "period": "last30days",
+  "currency": "USD",
+
+  "environment": {
+    "autoScaleSavings": { "amount": 1490.00, "percent": 46 },
+    "_autoScaleSavings_help": "From NME: overall auto-scale savings for the period - both the $ amount and the %. Shown as 'value already realised'.",
+    "lawIngestionGbPerMonth": 210.0,
+    "lawUserInputDelayGbPerMonth": 178.0,
+    "lawCurrentSampleSeconds": 60,
+    "_law_help": "From the Log Analytics workspace (Usage / Perf tables) or Azure Cost Management. lawUserInputDelayGbPerMonth is best; lawIngestionGbPerMonth alone still improves the estimate."
+  },
+
+  "hostPools": [
+    {
+      "name": "RF-MultiSession",
+      "autoScaleSavings": { "amount": 312.40, "percent": 51 },
+      "notes": "From NME Auto-scale History, last 30 days."
+    }
+  ],
+
+  "screenshots": [
+    {
+      "path": "../evidence/autoscale-history-rf.png",
+      "caption": "Auto-scale history, RF-MultiSession, last 30 days",
+      "play": "autoscale-base-capacity",
+      "scope": "RF-MultiSession"
+    }
+  ]
+}

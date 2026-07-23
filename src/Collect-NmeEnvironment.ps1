@@ -26,6 +26,7 @@ function Get-NmeHostPoolInventory {
                     resourceGroup  = $hp.resourceGroup
                     name           = $hp.hostpoolName
                     hostCount      = 0
+                    location       = $ws.location
                 }
             }
             $pools[$key].hostCount++

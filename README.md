@@ -17,6 +17,33 @@ Via the NME REST API (read-only GETs only — never writes):
 
 **Not in the REST API** (reported as *Manual*): Log Analytics counters/savings, RI Analytics, 30-day auto-scale CPU/RAM history, Insights dashboards, Azure Monitor enablement, empty host pools, Azure Capacity Extender.
 
+## Cost Optimisation analysis (`-CostAnalysis`)
+
+Adds a customer-facing **Cost Optimisation** section to the report: a headline monthly/annual savings range plus one card per optimisation play — auto-scale base capacity, pre-staging, rolling drain, stopped-disk tiering, OS disk right-tiering, VM rightsizing, Log Analytics counter optimisation, and storage auto-scaling.
+
+Every figure carries an **evidence tier**:
+
+| Tier | Source | Shown as |
+|---|---|---|
+| **Measured** | Figures you record from the NME console (`-ObservedData`) — auto-scale savings, LAW ingestion — plus optional screenshots embedded as evidence | Point value |
+| **Enriched** | Live Azure data via `az` CLI (Advisor rightsizing, disk SKUs, LAW ingestion by counter). Skipped cleanly if `az` is absent, or with `-SkipAzureEnrichment` | Point value |
+| **Modelled** | NME config + stated assumptions (`config/cost-assumptions.json`) | Conservative–typical range |
+
+Compute/disk/Log Analytics rates come from the public Azure Retail Prices API and are cached in `config/pricing-cache.json` (7-day TTL), so `-FromFile` re-runs work offline once the cache is warm. Compute is priced at the base rate (assumes Azure Hybrid Benefit) — the Windows PAYG rate is fetched too and noted.
+
+```powershell
+# Full run with cost analysis (uses az CLI if authenticated)
+pwsh ./Invoke-NerdioHealthCheck.ps1 -Report -CustomerName "Acme Corp" -CostAnalysis
+
+# With measured figures from the NME console (copy config/observed-data.example.json)
+pwsh ./Invoke-NerdioHealthCheck.ps1 -Report -CustomerName "Acme Corp" -CostAnalysis -ObservedData config/observed-data.local.json
+
+# Offline re-run, no Azure calls
+pwsh ./Invoke-NerdioHealthCheck.ps1 -FromFile output/raw/environment-....json -CostAnalysis -SkipAzureEnrichment
+```
+
+`config/observed-data.local.json` is picked up automatically when present. Screenshot evidence (PNG/JPG, under ~1.5 MB) goes in `evidence/` and is referenced from the observed-data file. Assumptions (business window, conservative factor, LAW sample-rate targets, fallback prices) are all tunable in `config/cost-assumptions.json`. Savings figures are indicative estimates, not quotes — the report says so and lists each play's assumptions.
+
 ## Setup
 
 1. Copy `config/credentials.example.json` to `config/credentials.local.json` (gitignored).
@@ -50,10 +77,13 @@ All thresholds, severities, reference links, and the health-score weighting live
 
 ```
 Invoke-NerdioHealthCheck.ps1   entry point / orchestrator
-config/   credentials + rules.json
+config/   credentials + rules.json + cost-assumptions.json + observed-data example
 src/      Connect-Nme, Collect-NmeEnvironment, Test-NmeRules, Write-NmeReport
+src/cost/ Get-NmePricing, Get-NmeAzureEnrichment, Get-NmeObservedData,
+          Measure-NmeCostSavings, Write-NmeCostSection
 assets/   vendored Nerdio logo
-output/   raw collection, findings, reports (gitignored)
+evidence/ screenshot evidence for observed data (gitignored)
+output/   raw collection, findings, cost analysis, reports (gitignored)
 ```
 
 The report is styled with the NME Design System (brand teal, Poppins, status-badge conventions). Tokens are inlined and the logo is base64-embedded so the HTML is a single portable file.
