@@ -91,15 +91,16 @@ function Write-NmeCostSection {
     $priceNote = "Prices: Azure Retail ($((@($ca.regions) -join ', ')))"
     if ($ca.hybridBenefit) { $priceNote += ' &middot; compute priced assuming Azure Hybrid Benefit' }
     if ($t.quantifiedPlays -gt 0) {
-        $rangeTxt = if ([math]::Round($t.monthlyLow) -eq [math]::Round($t.monthlyTypical)) {
-            (Format-NmeMoney -Value $t.monthlyTypical -Currency $cur)
+        # Lead with the best-case (top) figure; state the conservative floor in the sub-line.
+        $isPoint = [math]::Round($t.monthlyLow) -eq [math]::Round($t.monthlyTypical)
+        if ($isPoint) {
+            $monthTxt = (Format-NmeMoney -Value $t.monthlyTypical -Currency $cur)
+            $annualTxt = (Format-NmeMoney -Value $t.annualTypical -Currency $cur)
+            $floorNote = ''
         } else {
-            "$(Format-NmeMoney -Value $t.monthlyLow -Currency $cur)&ndash;$(Format-NmeMoney -Value $t.monthlyTypical -Currency $cur)"
-        }
-        $annualTxt = if ([math]::Round($t.annualLow) -eq [math]::Round($t.annualTypical)) {
-            (Format-NmeMoney -Value $t.annualTypical -Currency $cur)
-        } else {
-            "$(Format-NmeMoney -Value $t.annualLow -Currency $cur)&ndash;$(Format-NmeMoney -Value $t.annualTypical -Currency $cur)"
+            $monthTxt = "up to $(Format-NmeMoney -Value $t.monthlyTypical -Currency $cur)"
+            $annualTxt = "up to $(Format-NmeMoney -Value $t.annualTypical -Currency $cur)"
+            $floorNote = " <strong>Best-case estimate</strong> &ndash; the conservative floor is $(Format-NmeMoney -Value $t.monthlyLow -Currency $cur)/month ($(Format-NmeMoney -Value $t.annualLow -Currency $cur)/year); see each play for its own range."
         }
         $overlapHtml = ''
         if ($t.overlapNote) { $overlapHtml = " $(ConvertTo-HtmlText $t.overlapNote)" }
@@ -107,8 +108,8 @@ function Write-NmeCostSection {
 <div class="costbar">
   <div>
     <div class="eyebrow">Estimated Savings Opportunity</div>
-    <div class="big">$rangeTxt <span class="per">/ month</span>&nbsp;&nbsp;&middot;&nbsp;&nbsp;$annualTxt <span class="per">/ year</span></div>
-    <div class="sub">Across $($t.quantifiedPlays) quantified optimisation play$(if ($t.quantifiedPlays -ne 1) {'s'}). $priceNote. $(ConvertTo-HtmlText $ca.workingHoursNote)$overlapHtml</div>
+    <div class="big">$monthTxt <span class="per">/ month</span>&nbsp;&nbsp;&middot;&nbsp;&nbsp;$annualTxt <span class="per">/ year</span></div>
+    <div class="sub">Across $($t.quantifiedPlays) quantified optimisation play$(if ($t.quantifiedPlays -ne 1) {'s'}).$floorNote $priceNote. $(ConvertTo-HtmlText $ca.workingHoursNote)$overlapHtml</div>
   </div>
 </div>
 "@)
