@@ -11,6 +11,30 @@ Everything is **read-only** — it only ever reads data, never changes the custo
 
 ---
 
+## Prerequisites
+
+This tool talks to NME through the **NME REST API** — that's how it reads the environment. Before you can run it against a customer, two things must be in place:
+
+1. **The NME REST API must be enabled** in that customer's Nerdio Manager (in the NME portal under **Settings → Integrations → REST API**). This is a one-time switch-on per NME instance, and it creates an API client (an Entra app registration) that the tool authenticates as. If it's not enabled, the tool has nothing to connect to.
+
+2. **You must add the credentials** for that API client. Copy `config/credentials.example.json` to `config/credentials.local.json` and fill in the values NME gives you when the REST API is enabled:
+   - `tokenUrl` / `tenantId` — the customer's Entra tenant
+   - `clientId` — the API client's application ID
+   - `clientSecret` — the client secret
+   - `scope` — `api://<nmeApiAppId>/.default`
+   - `baseUrl` — the customer's NME URL (`https://<nmw-app-xxxxx>.azurewebsites.net`)
+
+   `credentials.local.json` is gitignored and holds the secret — never commit it.
+
+Also needed:
+
+- **PowerShell** (Windows PowerShell 5.1 or PowerShell 7 — `pwsh`).
+- **`az` CLI (optional)** — only for the enriched cost figures. If you're not signed in, the tool skips enrichment and still runs. See [What permissions do I need?](#what-permissions-do-i-need) for the access levels.
+
+> **No NME REST API access = the tool can't run.** It's the single hard dependency. Everything else (Azure enrichment, observed data) is optional and only sharpens the cost numbers.
+
+---
+
 ## Quick start
 
 1. **Set up credentials once** (see [Setup](#setup) below).
@@ -145,10 +169,9 @@ If you only have the NME credentials, everything still runs — you just get Mod
 
 ## Setup
 
-1. Copy `config/credentials.example.json` to `config/credentials.local.json` (this file is gitignored — it holds the secret).
-2. Fill in `clientSecret` and `baseUrl`. The other fields (tenant/client/scope) come from your NME REST API app registration.
+See [Prerequisites](#prerequisites) above — enable the NME REST API and fill in `config/credentials.local.json`. That's the whole setup.
 
-Credentials use OAuth2 client-credentials against Azure AD; the token is held in memory for the run only and never written to disk.
+Credentials use OAuth2 client-credentials against Entra ID; the token is held in memory for the run only and never written to disk.
 
 ---
 
