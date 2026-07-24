@@ -9,8 +9,6 @@ It does two things:
 
 Everything is **read-only** — it only ever reads data, never changes the customer's environment. The report is one self-contained HTML file (logo and images embedded), so you can email it or drop it in Teams.
 
-> Standalone tool — **not** part of Nerdio Compass. Sibling in spirit to `avd-assess` / `rds-assess`.
-
 ---
 
 ## Quick start
