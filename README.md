@@ -19,7 +19,9 @@ Via the NME REST API (read-only GETs only — never writes):
 
 ## Cost Optimisation analysis (`-CostAnalysis`)
 
-Adds a customer-facing **Cost Optimisation** section to the report: a headline monthly/annual savings range plus one card per optimisation play — auto-scale base capacity, pre-staging, rolling drain, stopped-disk tiering, OS disk right-tiering, VM rightsizing, Log Analytics counter optimisation, and storage auto-scaling.
+Adds a customer-facing **Cost Optimisation** section to the report: a headline monthly/annual savings range plus one card per optimisation play — auto-scale base capacity, pre-staging, rolling drain, stopped-disk tiering, OS disk right-tiering, VM rightsizing, Log Analytics counter optimisation, storage auto-scaling, and Reserved Instances / Savings Plans on the always-on base.
+
+**Reserved Instances / Savings Plans** are handled both ways. Existing coverage (set `riCoveragePercent` in observed data, per-environment or per-pool) *deflates* the auto-scale / pre-stage / rolling-drain savings — powering off pre-paid capacity saves nothing. Separately, the **commit-discount** play prices the genuine 24×7 base (auto-scale on with a ≥1-host floor) at 1-year and 3-year compute Savings Plan rates, and surfaces any Azure Advisor reservation recommendations when enrichment runs. It never recommends committing capacity that auto-scale powers off, and never suggests a reservation for an unmanaged/deallocated pool (that needs auto-scale first).
 
 Every figure carries an **evidence tier**:
 

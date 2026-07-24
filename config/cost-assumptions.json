@@ -48,6 +48,13 @@
     "_help": "When Azure enrichment supplies provisioned vs used GiB for Premium Files shares, savings = (provisioned - used x headroom) x per-GiB rate."
   },
 
+  "commitDiscount": {
+    "enabled": true,
+    "defaultCoveragePercent": 0,
+    "_defaultCoveragePercent_help": "Assumed share of session-host compute ALREADY covered by Reserved Instances / Savings Plans when the customer hasn't told us. 0 = assume none (no silent deflation). Override per environment/pool via observed-data riCoveragePercent.",
+    "_commit_help": "The commit-discount play prices the always-on base (auto-scale minActiveHostsCount >= 1) at 1-year and 3-year compute Savings Plan rates from the Azure Retail Prices API. It applies only to hosts that genuinely run 24x7 - it never recommends committing capacity that auto-scale already powers off, nor deallocated/unmanaged pools (those need auto-scale first)."
+  },
+
   "pricing": {
     "cacheTtlDays": 7,
     "maxPagesPerQuery": 10,

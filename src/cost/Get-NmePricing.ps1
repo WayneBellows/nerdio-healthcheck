@@ -17,10 +17,12 @@ function Get-AzureRetailPrice {
     param(
         [Parameter(Mandatory)][string]$Filter,
         [string]$Currency = 'USD',
-        [int]$MaxPages = 10
+        [int]$MaxPages = 10,
+        [string]$ApiVersion   # e.g. '2023-01-01-preview' to expose the savingsPlan field
     )
     $items = [System.Collections.Generic.List[object]]::new()
-    $url = "https://prices.azure.com/api/retail/prices?currencyCode=$Currency&`$filter=$([uri]::EscapeDataString($Filter))"
+    $verParam = if ($ApiVersion) { "api-version=$ApiVersion&" } else { '' }
+    $url = "https://prices.azure.com/api/retail/prices?$($verParam)currencyCode=$Currency&`$filter=$([uri]::EscapeDataString($Filter))"
     $page = 0
     while ($url -and $page -lt $MaxPages) {
         $page++
@@ -110,6 +112,58 @@ function Get-NmeVmHourlyRate {
     $Cache.entries[$key] = $entry
     $Cache.dirty = $true
     return @{ linuxHr = $entry.linuxHr; windowsHr = $entry.windowsHr; currency = $Currency; source = 'retail-api'; linuxMeter = $entry.linuxMeter; windowsMeter = $entry.windowsMeter }
+}
+
+function Get-NmeCommitRate {
+    <#
+      Committed-use hourly rates for a VM size: pay-as-you-go vs 1-year / 3-year
+      Savings Plan (compute). Savings-plan rates are embedded on the base Linux
+      Consumption record (the .savingsPlan array), so this is directly comparable
+      to the PAYG hourly rate. Returns:
+        @{ payg; sp1yr; sp3yr; currency; source }
+      Any rate can be $null if unavailable; caller skips the commit play then.
+      Reservation (RI) rates track the Savings Plan closely and are surfaced
+      separately from Azure Advisor when enrichment is available.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Region,
+        [Parameter(Mandatory)][string]$SkuName,
+        [Parameter(Mandatory)][hashtable]$Cache,
+        [string]$Currency = 'USD',
+        [int]$TtlDays = 7
+    )
+    $key = "$Currency|$Region|commit|$SkuName"
+    if (Test-NmeCacheEntryFresh -Entry $Cache.entries[$key] -TtlDays $TtlDays) {
+        $e = $Cache.entries[$key]
+        return @{ payg = $e.payg; sp1yr = $e.sp1yr; sp3yr = $e.sp3yr; currency = $Currency; source = 'cache' }
+    }
+
+    $filter = "serviceName eq 'Virtual Machines' and armRegionName eq '$Region' and armSkuName eq '$SkuName' and priceType eq 'Consumption'"
+    # The savingsPlan schedule is only returned by the preview api-version.
+    $items = Get-AzureRetailPrice -Filter $filter -Currency $Currency -ApiVersion '2023-01-01-preview'
+    $items = @($items | Where-Object { $_.skuName -notmatch 'Spot|Low Priority' -and $_.type -ne 'DevTestConsumption' })
+    # Base (Linux/AHB) record carries the compute Savings Plan schedule.
+    $base = @($items | Where-Object { $_.productName -notmatch 'Windows$' }) | Sort-Object retailPrice | Select-Object -First 1
+    if (-not $base) {
+        return @{ payg = $null; sp1yr = $null; sp3yr = $null; currency = $Currency; source = 'unavailable' }
+    }
+
+    $sp1 = $null; $sp3 = $null
+    foreach ($sp in @($base.savingsPlan)) {
+        $term = "$($sp.term)"
+        if ($term -match '^1')      { $sp1 = [double]$sp.retailPrice }
+        elseif ($term -match '^3')  { $sp3 = [double]$sp.retailPrice }
+    }
+    $entry = [pscustomobject]@{
+        fetchedAt = (Get-Date).ToString('o')
+        payg      = [double]$base.retailPrice
+        sp1yr     = $sp1
+        sp3yr     = $sp3
+    }
+    $Cache.entries[$key] = $entry
+    $Cache.dirty = $true
+    return @{ payg = $entry.payg; sp1yr = $entry.sp1yr; sp3yr = $entry.sp3yr; currency = $Currency; source = 'retail-api' }
 }
 
 function Get-NmeDiskMonthlyRate {

@@ -11,14 +11,17 @@
     "lawIngestionGbPerMonth": 210.0,
     "lawUserInputDelayGbPerMonth": 178.0,
     "lawCurrentSampleSeconds": 60,
-    "_law_help": "From the Log Analytics workspace (Usage / Perf tables) or Azure Cost Management. lawUserInputDelayGbPerMonth is best; lawIngestionGbPerMonth alone still improves the estimate."
+    "_law_help": "From the Log Analytics workspace (Usage / Perf tables) or Azure Cost Management. lawUserInputDelayGbPerMonth is best; lawIngestionGbPerMonth alone still improves the estimate.",
+    "riCoveragePercent": 30,
+    "_riCoveragePercent_help": "Share of session-host compute already covered by Reserved Instances / Savings Plans (from the customer's Azure portal > Reservations/Savings plans, or NME's RI Analytics view). Deflates the auto-scale / pre-stage / rolling-drain compute savings (powering off pre-paid capacity saves nothing) and the remaining commit-discount opportunity. Omit if unknown."
   },
 
   "hostPools": [
     {
       "name": "RF-MultiSession",
       "autoScaleSavings": { "amount": 312.40, "percent": 51 },
-      "notes": "From NME Auto-scale History, last 30 days."
+      "riCoveragePercent": 0,
+      "notes": "From NME Auto-scale History, last 30 days. Per-pool riCoveragePercent overrides the environment figure for this pool if set."
     }
   ],
 

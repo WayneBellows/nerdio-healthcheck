@@ -56,11 +56,37 @@ function Get-NmePoolComputeRate {
     return @{ available = $true; rate = [double]$rate; skuName = $size; note = $note; windowsHr = $r.windowsHr; source = $r.source }
 }
 
+function Get-NmeUncoveredFraction {
+    <#
+      Fraction of a pool's compute NOT already covered by an RI/Savings Plan.
+      Per-pool riCoveragePercent (observed data) overrides the environment figure,
+      which overrides the assumptions default. Returns @{ fraction; coveragePct }.
+      Compute savings from powering hosts off apply only to this uncovered fraction -
+      pre-paid capacity saves nothing when it is switched off.
+    #>
+    param($HostPool, [hashtable]$Ctx)
+    $pct = $null
+    $name = $HostPool.ref.name
+    if ($Ctx.observed -and $Ctx.observed.hostPools) {
+        $po = @($Ctx.observed.hostPools) | Where-Object { $_.name -eq $name } | Select-Object -First 1
+        if ($po -and $po.PSObject.Properties['riCoveragePercent'] -and $null -ne $po.riCoveragePercent) { $pct = [double]$po.riCoveragePercent }
+    }
+    if ($null -eq $pct -and $Ctx.observed -and $Ctx.observed.environment -and
+        $Ctx.observed.environment.PSObject.Properties['riCoveragePercent'] -and $null -ne $Ctx.observed.environment.riCoveragePercent) {
+        $pct = [double]$Ctx.observed.environment.riCoveragePercent
+    }
+    if ($null -eq $pct) { $pct = [double]$Ctx.assum.commitDiscount.defaultCoveragePercent }
+    $pct = [math]::Max(0, [math]::Min(100, $pct))
+    return @{ fraction = (1 - $pct / 100); coveragePct = $pct }
+}
+
 function Measure-AutoScaleBaseCapacity {
     param($HostPool, [bool]$Pooled, [hashtable]$Ctx)
     $as = $HostPool.autoScale
     $name = $HostPool.ref.name
     if (-not $as -or -not $Pooled) { return $null }
+    $cov = Get-NmeUncoveredFraction -HostPool $HostPool -Ctx $Ctx
+    $covNote = if ($cov.coveragePct -gt 0) { ("Reduced to the {0:P0} of compute not already covered by a reservation/savings plan (powering off pre-paid capacity saves nothing)." -f $cov.fraction) } else { $null }
     $rateInfo = $Ctx.rates[$name]
     if (-not $rateInfo.available) { return $null }
     $R = $rateInfo.rate
@@ -74,8 +100,8 @@ function Measure-AutoScaleBaseCapacity {
     }
 
     if ($as.isEnabled -ne $true) {
-        $typical = $hostCount * $R * $hOff
-        $low = [math]::Max(0, $hostCount - 1) * $R * $hOff
+        $typical = $hostCount * $R * $hOff * $cov.fraction
+        $low = [math]::Max(0, $hostCount - 1) * $R * $hOff * $cov.fraction
         $deallocCount = @($HostPool.hosts | Where-Object { "$($_.powerState)" -match 'deallocated' }).Count
         $stateNote = if ($deallocCount -ge $hostCount) {
             "All $hostCount host(s) are currently deallocated (manually managed). The figure represents avoided cost versus running them through the month without auto-scale switching them off."
@@ -88,11 +114,11 @@ function Measure-AutoScaleBaseCapacity {
             -CurrentState ("Auto-scale is OFF for this pool of {0} x {1}. Without it, capacity only powers off when someone remembers to do it. {2}" -f $hostCount, $rateInfo.skuName, $stateNote) `
             -Recommendation 'Enable dynamic auto-scale so hosts power off outside the business window and scale to demand within it.' `
             -MonthlyLow $low -MonthlyTypical $typical `
-            -Assumptions @(
+            -Assumptions (@(
                 ("Business window {0}h x {1}d/week; ~{2:N0} off-hours per month reclaimable per host." -f $Ctx.assum.workingHours.hoursPerDay, $Ctx.assum.workingHours.daysPerWeek, $hOff),
                 $rateInfo.note,
                 'Conservative figure keeps one host running 24x7.'
-            ) -Evidence @("Pricing source: $($rateInfo.source)")
+            ) + @($covNote | Where-Object { $_ })) -Evidence @("Pricing source: $($rateInfo.source)")
     }
 
     # Auto-scale on - check the standing base capacity.
@@ -111,17 +137,17 @@ function Measure-AutoScaleBaseCapacity {
         return $null
     }
     $excess = $min - $recMin
-    $typical = $excess * $R * $hOff
+    $typical = $excess * $R * $hOff * $cov.fraction
     $low = [math]::Round($typical * [double]$Ctx.assum.conservativeFactor, 2)
     $svocText = if ($svoc) { 'Start VM on Connect is enabled, so the base can drop to zero - the first user powers a host on.' } else { 'Consider enabling Start VM on Connect to allow a zero-host base outside hours.' }
     return New-CostPlay -Id 'autoscale-base-capacity' -Title 'Reduce base host pool capacity' -Scope $name -Tier $(if ($measured) { 'Measured' } else { 'Modelled' }) `
         -CurrentState ("Auto-scale is ON but keeps {0} host(s) always active; recommended base here is {1}." -f $min, $recMin) `
         -Recommendation ("Lower minimum active hosts from {0} to {1}. {2}" -f $min, $recMin, $svocText) `
         -MonthlyLow $low -MonthlyTypical $typical `
-        -Assumptions @(
+        -Assumptions (@(
             ("Each surplus base host runs ~{0:N0} avoidable off-hours per month." -f $Ctx.hoursOff),
             $rateInfo.note
-        ) -Evidence @(if ($measured) { ("NME auto-scale history: {0:N2} {1} ({2}%) saved over the reported period." -f $measured.autoScaleSavings.amount, $Ctx.currency, $measured.autoScaleSavings.percent) } else { "Pricing source: $($rateInfo.source)" })
+        ) + @($covNote | Where-Object { $_ })) -Evidence @(if ($measured) { ("NME auto-scale history: {0:N2} {1} ({2}%) saved over the reported period." -f $measured.autoScaleSavings.amount, $Ctx.currency, $measured.autoScaleSavings.percent) } else { "Pricing source: $($rateInfo.source)" })
 }
 
 function Measure-PreStageOptimisation {
@@ -143,18 +169,20 @@ function Measure-PreStageOptimisation {
 
     $rateInfo = $Ctx.rates[$name]
     if (-not $rateInfo.available) { return $null }
+    $cov = Get-NmeUncoveredFraction -HostPool $HostPool -Ctx $Ctx
     $excess = $ready - $recommendedReady
-    $typical = $excess * $rateInfo.rate * [double]$Ctx.assum.preStage.leadHours * [double]$Ctx.assum.workdaysPerMonth
+    $typical = $excess * $rateInfo.rate * [double]$Ctx.assum.preStage.leadHours * [double]$Ctx.assum.workdaysPerMonth * $cov.fraction
     $low = [math]::Round($typical * [double]$Ctx.assum.conservativeFactor, 2)
+    $covNote = if ($cov.coveragePct -gt 0) { ("Reduced to the {0:P0} of compute not covered by a reservation/savings plan." -f $cov.fraction) } else { $null }
     return New-CostPlay -Id 'prestage-optimisation' -Title 'Trim pre-staged capacity' -Scope $name -Tier 'Modelled' `
         -CurrentState ("Pre-staging brings {0} host(s) online ahead of the workday against a pool capacity of {1}." -f $ready, $cap) `
         -Recommendation ("Reduce pre-staged hosts towards ~{0} (about {1:P0} of capacity) and let auto-scale triggers add the rest as demand builds. Review NME's intelligent pre-staging if logon storms are the concern." -f $recommendedReady, [double]$Ctx.assum.preStage.recommendedReadyFraction) `
         -MonthlyLow $low -MonthlyTypical $typical `
-        -Assumptions @(
+        -Assumptions (@(
             ("Each surplus pre-staged host runs ~{0}h before demand needs it, {1} workdays/month." -f $Ctx.assum.preStage.leadHours, $Ctx.assum.workdaysPerMonth),
             $rateInfo.note,
             'Low-confidence heuristic - validate against the pool''s logon pattern before acting.'
-        )
+        ) + @($covNote | Where-Object { $_ }))
 }
 
 function Measure-RollingDrainMode {
@@ -166,21 +194,23 @@ function Measure-RollingDrainMode {
 
     $rateInfo = $Ctx.rates[$name]
     if (-not $rateInfo.available) { return $null }
+    $cov = Get-NmeUncoveredFraction -HostPool $HostPool -Ctx $Ctx
     $cap = [int]$as.hostPoolCapacity
     $min = [int]$as.minActiveHostsCount
     $scalingHosts = [math]::Max(0, $cap - $min) * [double]$Ctx.assum.rollingDrain.drainingHostsFraction
     if ($scalingHosts -le 0) { return $null }
     $wd = [double]$Ctx.assum.workdaysPerMonth
-    $low = $scalingHosts * $rateInfo.rate * [double]$Ctx.assum.rollingDrain.hoursSavedPerHostPerDayLow * $wd
-    $typical = $scalingHosts * $rateInfo.rate * [double]$Ctx.assum.rollingDrain.hoursSavedPerHostPerDayTypical * $wd
+    $low = $scalingHosts * $rateInfo.rate * [double]$Ctx.assum.rollingDrain.hoursSavedPerHostPerDayLow * $wd * $cov.fraction
+    $typical = $scalingHosts * $rateInfo.rate * [double]$Ctx.assum.rollingDrain.hoursSavedPerHostPerDayTypical * $wd * $cov.fraction
+    $covNote = if ($cov.coveragePct -gt 0) { ("Reduced to the {0:P0} of compute not covered by a reservation/savings plan." -f $cov.fraction) } else { $null }
     return New-CostPlay -Id 'rolling-drain' -Title 'Enable rolling drain mode' -Scope $name -Tier 'Modelled' `
         -CurrentState 'Rolling drain mode is OFF - scaling-in hosts keep accepting new sessions, so they empty (and power off) later than they could.' `
         -Recommendation 'Enable rolling drain so hosts marked for scale-in stop taking new sessions and can deallocate as soon as existing sessions end.' `
         -MonthlyLow $low -MonthlyTypical $typical `
-        -Assumptions @(
+        -Assumptions (@(
             ("~{0:N1} host(s) assumed draining at a time (half of the {1}-host scaling range); each powers off {2}-{3}h sooner per workday." -f $scalingHosts, [math]::Max(0, $cap - $min), $Ctx.assum.rollingDrain.hoursSavedPerHostPerDayLow, $Ctx.assum.rollingDrain.hoursSavedPerHostPerDayTypical),
             $rateInfo.note
-        )
+        ) + @($covNote | Where-Object { $_ }))
 }
 
 function Measure-StoppedDiskTiering {
@@ -269,17 +299,102 @@ function Measure-VmRightsizing {
             -MonthlyLow $total -MonthlyTypical $total `
             -Evidence (@('Source: Azure Advisor cost recommendations.') + $lines)
     }
-    $evidence = @()
-    if ($enrich -and $enrich.advisorOther -and @($enrich.advisorOther).Count -gt 0) {
-        $others = @($enrich.advisorOther)
-        $riTotal = ($others | Measure-Object -Property monthlySavings -Sum).Sum
-        $evidence += ("Azure Advisor also flags {0} broader cost recommendation(s) worth ~{1:N0} {2}/month (e.g. reserved instances, unattached disks) - review alongside NME's RI Analytics." -f $others.Count, $riTotal, $Ctx.currency)
-    }
     return New-CostPlay -Id 'vm-rightsizing' -Title 'Right-size session host VMs' -Scope 'Environment' -Tier 'Manual' `
         -CurrentState 'VM rightsizing telemetry is not exposed by the NME REST API, and no Azure Advisor rightsizing recommendations were available for the session hosts in this run.' `
         -Recommendation 'Review Nerdio Advisor (NME console) and Auto-scale History CPU/RAM utilisation. Below ~60% sustained utilisation, smaller VM sizes or higher session density usually fit.' `
         -MonthlyLow $null -MonthlyTypical $null `
-        -Assumptions @('Nerdio Advisor recommendations are visible in the NME console only.') -Evidence $evidence
+        -Assumptions @('Nerdio Advisor recommendations are visible in the NME console only.')
+}
+
+function Measure-CommitDiscount {
+    <#
+      Reserved Instance / Savings Plan opportunity on the always-on base capacity.
+      Prices the recommended steady 24x7 floor (auto-scale ON with a >=1 host base,
+      Start-VM-on-Connect off) at 1-year and 3-year compute Savings Plan rates.
+      Never recommends committing capacity that auto-scale powers off, nor
+      unmanaged/deallocated pools (those need auto-scale first, not a reservation).
+      Coverage-adjusted so only the uncommitted portion is counted.
+    #>
+    param($Environment, [hashtable]$Ctx)
+    if ($Ctx.assum.commitDiscount.enabled -ne $true) { return $null }
+
+    # Environment-level existing coverage (RI/SP are bought at subscription/tenant level).
+    $covPct = [double]$Ctx.assum.commitDiscount.defaultCoveragePercent
+    if ($Ctx.observed -and $Ctx.observed.environment -and
+        $Ctx.observed.environment.PSObject.Properties['riCoveragePercent'] -and $null -ne $Ctx.observed.environment.riCoveragePercent) {
+        $covPct = [double]$Ctx.observed.environment.riCoveragePercent
+    }
+    $covPct = [math]::Max(0, [math]::Min(100, $covPct))
+    $uncovered = 1 - $covPct / 100
+
+    # Aggregate the recommended always-on floor by VM size.
+    $bySize = @{}
+    foreach ($hp in @($Environment.hostPools)) {
+        $as = $hp.autoScale
+        if (-not $as -or -not (Test-NmeIsPooled -HostPool $hp)) { continue }
+        if ($as.isEnabled -ne $true) { continue }                 # unmanaged -> enable auto-scale first
+        $min = [int]$as.minActiveHostsCount
+        if ($min -lt 1) { continue }                              # already scales to zero -> nothing runs 24x7
+        $svoc = ($as.extensions -and $as.extensions.startVmOnConnect -eq $true)
+        if ($svoc) { continue }                                   # first user powers a host on -> no committed floor
+        $size = "$($as.vmTemplate.size)"
+        if (-not $size) { continue }
+        # Conservative: price the recommended 1-host floor; the per-host rate lets a
+        # larger justified base be extrapolated.
+        if (-not $bySize.ContainsKey($size)) { $bySize[$size] = @{ hosts = 0; region = $Ctx.regions[$hp.ref.name] } }
+        $bySize[$size].hosts += 1
+    }
+
+    # Azure Advisor reservation recommendations (measured), if enrichment ran.
+    $riRecs = @()
+    if ($Ctx.enrichment -and $Ctx.enrichment.advisorOther) {
+        $riRecs = @($Ctx.enrichment.advisorOther | Where-Object { "$($_.kind)" -match 'Reservation' -and $_.monthlySavings -gt 0 })
+    }
+    $riMonthly = ($riRecs | Measure-Object -Property monthlySavings -Sum).Sum
+
+    $save1yr = 0.0; $save3yr = 0.0; $lines = @(); $any = $false
+    foreach ($size in ($bySize.Keys | Sort-Object)) {
+        $hosts = $bySize[$size].hosts
+        $rate = Get-NmeCommitRate -Region $bySize[$size].region -SkuName $size -Cache $Ctx.cache -Currency $Ctx.currency -TtlDays $Ctx.ttlDays
+        if ($null -eq $rate.payg -or ($null -eq $rate.sp1yr -and $null -eq $rate.sp3yr)) { continue }
+        $any = $true
+        $s1 = if ($null -ne $rate.sp1yr) { $hosts * ($rate.payg - $rate.sp1yr) * $Ctx.assum.hoursPerMonth * $uncovered } else { 0 }
+        $s3 = if ($null -ne $rate.sp3yr) { $hosts * ($rate.payg - $rate.sp3yr) * $Ctx.assum.hoursPerMonth * $uncovered } else { $s1 }
+        $save1yr += $s1; $save3yr += $s3
+        $lines += ("{0} x {1}: PAYG {2:N4}/hr vs SP {3:N4} (1yr) / {4:N4} (3yr) per host." -f $hosts, $size, $rate.payg, $rate.sp1yr, $rate.sp3yr)
+    }
+
+    $covAssume = if ($covPct -gt 0) { ("Priced on the {0:P0} of the base not already covered by an existing reservation/savings plan." -f $uncovered) } else { 'Assumes no existing reservation/savings-plan coverage - set riCoveragePercent in observed data if the customer already has some.' }
+    $tradeoff = 'Applies only to capacity that stays on 24x7 after auto-scale optimisation. Commit the steady floor; let auto-scale handle the peaks. Do not reserve capacity you intend to power off.'
+
+    if ($any -and $save1yr -gt 0) {
+        $tier = if ($riRecs.Count -gt 0) { 'Enriched' } else { 'Modelled' }
+        $evidence = @('Savings Plan rates: Azure Retail Prices API (compute, 1yr/3yr).') + $lines
+        if ($riRecs.Count -gt 0) { $evidence += ("Azure Advisor independently recommends {0} reserved-instance purchase(s) worth ~{1:N0} {2}/month." -f $riRecs.Count, $riMonthly, $Ctx.currency) }
+        return New-CostPlay -Id 'commit-discount' -Title 'Commit the always-on base (Reserved Instances / Savings Plan)' -Scope 'Environment' -Tier $tier `
+            -CurrentState 'Host pools keep a base of hosts running 24x7 that is billed at pay-as-you-go rates.' `
+            -Recommendation 'Cover the steady 24x7 base with a 1-year or 3-year compute Savings Plan (or Reserved Instances). Nerdio''s RI Analytics (Premium) shows exactly how many CPU-hours are steady enough to commit.' `
+            -MonthlyLow ([math]::Round($save1yr, 2)) -MonthlyTypical ([math]::Round($save3yr, 2)) `
+            -Assumptions @(
+                'Range is 1-year Savings Plan (lower) to 3-year (higher discount, longer commitment).',
+                'Priced on the recommended 1-host steady floor per qualifying pool - a larger justified 24x7 base scales the saving pro-rata (see per-host rates).',
+                $covAssume,
+                $tradeoff
+            ) -Evidence $evidence
+    }
+
+    # Nothing genuinely runs 24x7 (or auto-scale not yet enabled) -> educational/review card.
+    $reviewState = if ($riRecs.Count -gt 0) {
+        ("No steady 24x7 base was found in the auto-scale configuration, but Azure Advisor flags {0} reserved-instance opportunity worth ~{1:N0} {2}/month against current running patterns." -f $riRecs.Count, $riMonthly, $Ctx.currency)
+    } else {
+        'No steady 24x7 base was found: pools either scale to zero or are not yet under auto-scale management, so there is no fixed floor to commit today.'
+    }
+    return New-CostPlay -Id 'commit-discount' -Title 'Reserved Instances / Savings Plan' -Scope 'Environment' -Tier $(if ($riRecs.Count -gt 0) { 'Enriched' } else { 'Manual' }) `
+        -CurrentState $reviewState `
+        -Recommendation 'Once auto-scale is enabled and the steady 24x7 floor is known, cover that floor with a 1yr/3yr Savings Plan or Reserved Instances. Use NME RI Analytics (Premium) to size the commitment; keep auto-scale for the variable layer above it.' `
+        -MonthlyLow $null -MonthlyTypical $null `
+        -Assumptions @($tradeoff, $covAssume) `
+        -Evidence @($lines + $(if ($riRecs.Count -gt 0) { $riRecs | ForEach-Object { "Advisor: $($_.summary) (~$([math]::Round($_.monthlySavings)) $($Ctx.currency)/mo)" } }) | Where-Object { $_ })
 }
 
 function Measure-LawCounterOptimisation {
@@ -452,6 +567,8 @@ function Get-NmeCostAnalysis {
     $p7 = Measure-LawCounterOptimisation -Environment $Environment -Ctx $ctx
     if ($p7) { $plays.Add($p7) }
     foreach ($p8 in @(Measure-StorageAutoScaling -Environment $Environment -Ctx $ctx)) { $plays.Add($p8) }
+    $p9 = Measure-CommitDiscount -Environment $Environment -Ctx $ctx
+    if ($p9) { $plays.Add($p9) }
 
     # Realised value (Tier 1): auto-scale savings already delivered, shown separately from opportunity.
     $realised = $null

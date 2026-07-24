@@ -25,7 +25,7 @@ function Get-NmeObservedData {
     }
 
     # Light validation: warn on obviously wrong shapes, keep whatever is usable.
-    foreach ($hp in @($data.hostPools)) {
+    foreach ($hp in @($data.hostPools | Where-Object { $_ })) {
         if (-not $hp.name) { Write-Warning 'Observed data: a hostPools entry has no "name" - it will be ignored.' }
         if ($hp.autoScaleSavings -and $null -ne $hp.autoScaleSavings.amount -and $hp.autoScaleSavings.amount -isnot [double] -and $hp.autoScaleSavings.amount -isnot [int] -and $hp.autoScaleSavings.amount -isnot [long] -and $hp.autoScaleSavings.amount -isnot [decimal]) {
             Write-Warning "Observed data: autoScaleSavings.amount for '$($hp.name)' is not numeric - it will be ignored."
