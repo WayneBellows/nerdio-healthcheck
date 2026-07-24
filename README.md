@@ -1,97 +1,224 @@
 # Nerdio Health Check
 
-Read-only assessment of a customer's Nerdio Manager for Enterprise (NME) environment via the NME REST API. Scores configuration against Nerdio best practice and produces a branded HTML report with Required / Recommended / Optional / Manual findings and an overall health score.
+A read-only tool that connects to a customer's **Nerdio Manager for Enterprise (NME)** environment, checks it against Nerdio best practice, and produces a single branded HTML report you can walk a customer through.
 
-Standalone tool — **not** part of Nerdio Compass. Sibling in spirit to `avd-assess` / `rds-assess`.
+It does two things:
 
-## What it checks
+1. **Health check** — scores the configuration (auto-scale, FSLogix, images, notifications, and more) and lists what's Required, Recommended, Optional, or needs a Manual check.
+2. **Cost optimisation** (optional) — estimates how much the customer could save with Nerdio's cost features and puts a monthly/annual pound-or-dollar figure on it, for a value conversation.
 
-Via the NME REST API (read-only GETs only — never writes):
+Everything is **read-only** — it only ever reads data, never changes the customer's environment. The report is one self-contained HTML file (logo and images embedded), so you can email it or drop it in Teams.
 
-- **Version & supportability** — NME version, edition, N/N-1 posture (set `knownLatestVersion`)
-- **Auto-Scale** — enabled, auto-heal, sizing, stopped-disk type (Premium), pre-stage, scale triggers
-- **Host pool config** — FSLogix, session time limits, scheduled agent updates, validation flag, friendly name, availability zones, time-zone redirection, RDP Shortpath
-- **Images** — OS disk optimisation, Azure Compute Gallery
-- **App delivery** — UAM policies, repositories, Shell Apps, App-Attach
-- **Notifications, RBAC, usage** (named users vs MAU)
+> Standalone tool — **not** part of Nerdio Compass. Sibling in spirit to `avd-assess` / `rds-assess`.
 
-**Not in the REST API** (reported as *Manual*): Log Analytics counters/savings, RI Analytics, 30-day auto-scale CPU/RAM history, Insights dashboards, Azure Monitor enablement, empty host pools, Azure Capacity Extender.
+---
 
-## Cost Optimisation analysis (`-CostAnalysis`)
+## Quick start
 
-Adds a customer-facing **Cost Optimisation** section to the report: a headline monthly/annual savings range plus one card per optimisation play — auto-scale base capacity, pre-staging, rolling drain, stopped-disk tiering, OS disk right-tiering, VM rightsizing, Log Analytics counter optimisation, storage auto-scaling, and Reserved Instances / Savings Plans on the always-on base.
-
-**Reserved Instances / Savings Plans** are handled both ways. Existing coverage (set `riCoveragePercent` in observed data, per-environment or per-pool) *deflates* the auto-scale / pre-stage / rolling-drain savings — powering off pre-paid capacity saves nothing. Separately, the **commit-discount** play prices the genuine 24×7 base (auto-scale on with a ≥1-host floor) at 1-year and 3-year compute Savings Plan rates, and surfaces any Azure Advisor reservation recommendations when enrichment runs. It never recommends committing capacity that auto-scale powers off, and never suggests a reservation for an unmanaged/deallocated pool (that needs auto-scale first).
-
-Coverage is resolved with clear precedence and the basis is always stated (console, a note box in the report, and the cost-analysis JSON):
-
-1. **Supplied** — `riCoveragePercent` in observed data. Green note, used as-is.
-2. **Azure-confirmed-none** — enrichment read the tenant's reservations and found none. Green note, 0% is correct.
-3. **Assumed default** — reservations were detected but no % supplied, Azure couldn't be read (needs **Reservation Reader** / **Cost Management Reader** at tenant scope, beyond subscription Reader), or nothing was supplied. **Amber "Action needed"** note flags that compute savings may be overstated until you capture the real figure. The enrichment auto-installs the `reservation` az extension and detects the exact case, but a trustworthy coverage **%** is never fabricated — you set it in observed data.
-
-Every figure carries an **evidence tier**:
-
-| Tier | Source | Shown as |
-|---|---|---|
-| **Measured** | Figures you record from the NME console (`-ObservedData`) — auto-scale savings, LAW ingestion — plus optional screenshots embedded as evidence | Point value |
-| **Enriched** | Live Azure data via `az` CLI (Advisor rightsizing, disk SKUs, LAW ingestion by counter). Skipped cleanly if `az` is absent, or with `-SkipAzureEnrichment` | Point value |
-| **Modelled** | NME config + stated assumptions (`config/cost-assumptions.json`) | Conservative–typical range |
-
-Compute/disk/Log Analytics rates come from the public Azure Retail Prices API and are cached in `config/pricing-cache.json` (7-day TTL), so `-FromFile` re-runs work offline once the cache is warm. Compute is priced at the base rate (assumes Azure Hybrid Benefit) — the Windows PAYG rate is fetched too and noted.
+1. **Set up credentials once** (see [Setup](#setup) below).
+2. **Run it:**
 
 ```powershell
-# Full run with cost analysis (uses az CLI if authenticated)
-pwsh ./Invoke-NerdioHealthCheck.ps1 -Report -CustomerName "Acme Corp" -CostAnalysis
-
-# With measured figures from the NME console (copy config/observed-data.example.json)
-pwsh ./Invoke-NerdioHealthCheck.ps1 -Report -CustomerName "Acme Corp" -CostAnalysis -ObservedData config/observed-data.local.json
-
-# Offline re-run, no Azure calls
-pwsh ./Invoke-NerdioHealthCheck.ps1 -FromFile output/raw/environment-....json -CostAnalysis -SkipAzureEnrichment
+pwsh ./Invoke-NerdioHealthCheck.ps1 -Report -CustomerName "Acme Corp"
 ```
 
-`config/observed-data.local.json` is picked up automatically when present. Screenshot evidence (PNG/JPG, under ~1.5 MB) goes in `evidence/` and is referenced from the observed-data file. Assumptions (business window, conservative factor, LAW sample-rate targets, fallback prices) are all tunable in `config/cost-assumptions.json`. Savings figures are indicative estimates, not quotes — the report says so and lists each play's assumptions.
+3. Open the HTML report from the `output/` folder.
+
+Add `-CostAnalysis` to include the cost optimisation section:
+
+```powershell
+pwsh ./Invoke-NerdioHealthCheck.ps1 -Report -CustomerName "Acme Corp" -CostAnalysis
+```
+
+That's the whole tool. The rest of this document explains what's in the report and how to get the most accurate numbers.
+
+---
+
+## Part 1 — The health check
+
+Reads the NME REST API and checks:
+
+- **Version & supportability** — NME version, edition, and whether it's within the supported N/N-1 window.
+- **Auto-Scale** — is it on, auto-heal, sizing, the stopped-disk type, pre-staging, scale triggers.
+- **Host pool config** — FSLogix, session time limits, scheduled agent updates, validation flag, friendly name, availability zones, time-zone redirection, RDP Shortpath.
+- **Images** — OS disk optimisation, Azure Compute Gallery.
+- **App delivery** — UAM policies, repositories, Shell Apps, App-Attach.
+- **Notifications, RBAC, usage** — including named users vs monthly active users.
+
+Each finding is graded **Required** (must fix), **Recommended** (best practice), **Optional** (nice-to-have), **Pass** (already good), or **Manual**.
+
+**"Manual" findings** are things the REST API simply doesn't expose, so the tool can't check them automatically — it lists them for you to review live in the NME console: Log Analytics counters, RI Analytics, 30-day auto-scale history, Insights dashboards, Azure Monitor enablement, empty host pools, Azure Capacity Extender.
+
+The report shows an overall **health score out of 100**, summary tiles, and two views: **By Severity** and **By Host Pool**.
+
+---
+
+## Part 2 — The cost optimisation section (`-CostAnalysis`)
+
+Adds a customer-facing section with a **headline savings range** (per month and per year) and one card per opportunity ("play"). Each card shows the current state, the recommended change, the estimated saving, and the assumptions behind it.
+
+### The plays it quantifies
+
+| Play | What it looks at |
+|---|---|
+| **Enable / right-size auto-scale** | Hosts running 24/7 that could power down out of hours |
+| **Trim pre-staging** | More hosts warmed up before the workday than needed |
+| **Rolling drain** | Hosts that could empty and switch off sooner |
+| **Stopped-disk tiering** | Premium OS disks still billing at full rate while a host is off |
+| **OS disk right-tiering** | Premium OS disks on hosts where Standard SSD would do |
+| **VM right-sizing** | Oversized session-host VMs (uses Azure Advisor when available) |
+| **Log Analytics counters** | The "User Input Delay" counter — often 80–91% of monitoring cost |
+| **Storage auto-scaling** | Over-provisioned Azure Files profile shares |
+| **Reserved Instances / Savings Plans** | Committing the always-on base to a 1- or 3-year rate |
+
+### How trustworthy is each number? (the three tiers)
+
+Every figure is **badged** so you and the customer know exactly how solid it is:
+
+| Tier | Where the number comes from | Shown as |
+|---|---|---|
+| 🟢 **Measured** | Real figures you read off the NME console (and type into a small file) | A single confident value |
+| 🔵 **Enriched** | Live data pulled read-only from the customer's Azure via the `az` CLI | A single value |
+| ⚪ **Modelled** | Worked out from the NME config plus stated assumptions | A conservative–typical **range** |
+
+Measured beats Enriched beats Modelled. If you give it nothing extra, it still produces defensible Modelled ranges from the config alone.
+
+Prices come from the **public Azure Retail Prices API** (no login needed) and are cached locally for 7 days, so repeat runs are fast and work offline. Compute is priced assuming **Azure Hybrid Benefit** (the Windows pay-as-you-go rate is also fetched and noted).
+
+Every card lists its assumptions, and the section states plainly that these are **estimates, not quotes**.
+
+### Reserved Instances & Savings Plans
+
+Reservations matter two ways, and the tool handles both:
+
+- **They reduce some savings.** If a customer already has reservations, powering hosts off saves nothing on that pre-paid compute. Tell the tool the coverage % (see below) and it shrinks the auto-scale / pre-stage / rolling-drain figures accordingly.
+- **They're an opportunity.** For a base of hosts that genuinely runs 24/7, the tool prices a 1-year and 3-year Savings Plan against pay-as-you-go and shows the discount. It deliberately **won't** suggest committing capacity that auto-scale would otherwise switch off, and won't suggest a reservation for a pool that isn't even running yet — that needs auto-scale first.
+
+**Where does the coverage % come from?** The tool tries to check Azure automatically and always tells you the basis, in the console, in a note box in the report, and in the JSON:
+
+| What happened | Note shown |
+|---|---|
+| You supplied the % | 🟢 uses your figure |
+| Azure confirmed the customer has none | 🟢 0% is correct |
+| Reservations exist but no % given, or Azure couldn't be read | 🟠 **"Action needed"** — go get the figure, otherwise savings may be overstated |
+
+Reading reservations from Azure needs a **tenant-level role** (Reservation Reader or Cost Management Reader) that plain subscription Reader doesn't include. When that role isn't there, the tool says so clearly and you just type the number in — it never invents a coverage figure.
+
+---
+
+## Getting the best numbers (optional inputs)
+
+The tool works with nothing extra, but two optional inputs sharpen it:
+
+### 1. Azure enrichment (automatic if you're logged in)
+
+If the `az` CLI is authenticated and can reach the customer's subscription, the tool automatically pulls:
+- Azure Advisor right-sizing and reservation recommendations
+- Actual disk SKUs
+- Log Analytics ingestion broken down by counter
+- Azure Files provisioned-vs-used capacity
+- Whether reservations exist
+
+It degrades gracefully — anything it can't read is simply skipped, and you can turn it off entirely with `-SkipAzureEnrichment`.
+
+### 2. Observed data (figures you read from the NME console)
+
+Some of the best numbers (actual auto-scale savings, Log Analytics volume, reservation coverage) live in the NME console, not the API. Record them in a small file so the report can show them as **Measured**:
+
+1. Copy `config/observed-data.example.json` to `config/observed-data.local.json`.
+2. Fill in what you have (all fields optional).
+3. It's picked up automatically, or pass it explicitly with `-ObservedData`.
+
+You can also reference **screenshots** (e.g. the NME auto-scale history screen) — put PNG/JPG files under `evidence/` (keep them under ~1.5 MB) and list them in the observed-data file. They're embedded into the report as proof.
+
+---
+
+## What permissions do I need?
+
+| You want… | You need |
+|---|---|
+| The health check + Modelled cost estimates | Just the NME REST API credentials (below). Nothing else. |
+| Azure-enriched figures (Advisor, disks, Log Analytics) | `az` logged in with **Reader** on the customer's subscription |
+| Automatic reservation-coverage detection | **Reservation Reader** or **Cost Management Reader** at tenant scope (beyond Reader) |
+
+If you only have the NME credentials, everything still runs — you just get Modelled ranges instead of Measured/Enriched values, and you type in the coverage % yourself.
+
+---
 
 ## Setup
 
-1. Copy `config/credentials.example.json` to `config/credentials.local.json` (gitignored).
+1. Copy `config/credentials.example.json` to `config/credentials.local.json` (this file is gitignored — it holds the secret).
 2. Fill in `clientSecret` and `baseUrl`. The other fields (tenant/client/scope) come from your NME REST API app registration.
 
-Credentials use OAuth2 client-credentials against Azure AD; the bearer token is held in memory for the run only.
+Credentials use OAuth2 client-credentials against Azure AD; the token is held in memory for the run only and never written to disk.
 
-## Usage
+---
+
+## Common commands
 
 ```powershell
-# Connectivity test only
+# Just test the connection
 pwsh ./Invoke-NerdioHealthCheck.ps1
 
-# Full run: collect + assess + branded HTML report
+# Health check + branded HTML report
 pwsh ./Invoke-NerdioHealthCheck.ps1 -Report -CustomerName "Acme Corp"
 
-# Collect raw data only (-> output/raw/)
+# Add the cost optimisation section (uses az CLI automatically if available)
+pwsh ./Invoke-NerdioHealthCheck.ps1 -Report -CustomerName "Acme Corp" -CostAnalysis
+
+# Cost analysis with your console figures added
+pwsh ./Invoke-NerdioHealthCheck.ps1 -Report -CustomerName "Acme Corp" -CostAnalysis -ObservedData config/observed-data.local.json
+
+# Cost analysis without touching Azure (config-based only)
+pwsh ./Invoke-NerdioHealthCheck.ps1 -Report -CustomerName "Acme Corp" -CostAnalysis -SkipAzureEnrichment
+
+# Collect the raw data now, report on it later (no credentials needed to re-run)
 pwsh ./Invoke-NerdioHealthCheck.ps1 -Collect
-
-# Re-assess / re-report previously collected data (no credentials needed)
-pwsh ./Invoke-NerdioHealthCheck.ps1 -FromFile output/raw/environment-YYYYMMDD-HHMMSS.json
+pwsh ./Invoke-NerdioHealthCheck.ps1 -FromFile output/raw/environment-YYYYMMDD-HHMMSS.json -CostAnalysis
 ```
 
-Output (HTML report, findings JSON, raw collection) lands in `output/` (gitignored).
+Reports, findings, and raw data all land in `output/` (gitignored).
 
-## Tuning
+### The switches
 
-All thresholds, severities, reference links, and the health-score weighting live in `config/rules.json` — edit there, no code change needed. Set `version.knownLatestVersion` to activate the N/N-1 supportability check (update each NME release, ~8 weeks).
+| Switch | What it does |
+|---|---|
+| `-Report` | Produce the HTML report |
+| `-CustomerName "…"` | Name shown on the report |
+| `-CostAnalysis` | Include the cost optimisation section |
+| `-ObservedData <path>` | Use figures you captured from the NME console |
+| `-SkipAzureEnrichment` | Don't call the `az` CLI (config-based estimates only) |
+| `-Collect` | Save the raw environment data without assessing |
+| `-FromFile <path>` | Re-run against previously saved data (offline, no credentials) |
 
-## Layout
+---
+
+## Tuning (no code changes)
+
+- **`config/rules.json`** — every health-check threshold, severity, reference link, and the health-score weighting. Set `version.knownLatestVersion` to the current NME version to switch on the supportability check (update it each release, roughly every 8 weeks).
+- **`config/cost-assumptions.json`** — the cost assumptions: business hours, conservative factor, Log Analytics sample-rate targets, currency, and fallback prices. Change `currency` to `GBP` to price everything in pounds.
+
+---
+
+## File layout
 
 ```
-Invoke-NerdioHealthCheck.ps1   entry point / orchestrator
-config/   credentials + rules.json + cost-assumptions.json + observed-data example
-src/      Connect-Nme, Collect-NmeEnvironment, Test-NmeRules, Write-NmeReport
-src/cost/ Get-NmePricing, Get-NmeAzureEnrichment, Get-NmeObservedData,
-          Measure-NmeCostSavings, Write-NmeCostSection
-assets/   vendored Nerdio logo
-evidence/ screenshot evidence for observed data (gitignored)
-output/   raw collection, findings, cost analysis, reports (gitignored)
+Invoke-NerdioHealthCheck.ps1   the tool you run
+config/    credentials, rules.json, cost-assumptions.json, observed-data example
+src/       core: Connect-Nme, Collect-NmeEnvironment, Test-NmeRules, Write-NmeReport
+src/cost/  cost engine: pricing, Azure enrichment, observed data,
+           savings calculations, report section
+assets/    Nerdio logo
+evidence/  your screenshots for observed data (gitignored)
+output/    raw data, findings, cost analysis, reports (gitignored)
 ```
 
-The report is styled with the NME Design System (brand teal, Poppins, status-badge conventions). Tokens are inlined and the logo is base64-embedded so the HTML is a single portable file.
+The report uses the NME design system (brand teal, Poppins) with everything inlined, so the HTML is one portable file.
+
+---
+
+## Good to know
+
+- **Read-only, always.** The tool never changes the customer's environment.
+- **Estimates, not quotes.** Cost figures are indicative and the report says so; actual savings depend on usage, discounts, and the customer's Enterprise Agreement rates.
+- **Host pools with no session hosts** can't be discovered via the API — the report flags this so you can confirm none were missed in the console.
