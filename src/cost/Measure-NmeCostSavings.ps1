@@ -56,6 +56,42 @@ function Get-NmePoolComputeRate {
     return @{ available = $true; rate = [double]$rate; skuName = $size; note = $note; windowsHr = $r.windowsHr; source = $r.source }
 }
 
+function Get-NmeCoverageContext {
+    <#
+      Resolve the environment-level RI/Savings-Plan coverage figure AND how we know it.
+      Precedence: operator-supplied observed value > Azure-confirmed-none > assumed default.
+      Sets needsManual = $true when the figure is an assumption that could be wrong
+      (reservations detected but % not supplied, Azure unreadable, or nothing supplied)
+      so the report and console can tell the operator to capture it.
+      Returns @{ percent; source; needsManual; message }.
+    #>
+    param([psobject]$Observed, [psobject]$Enrichment, [psobject]$Assumptions)
+    $default = [double]$Assumptions.commitDiscount.defaultCoveragePercent
+
+    if ($Observed -and $Observed.environment -and
+        $Observed.environment.PSObject.Properties['riCoveragePercent'] -and $null -ne $Observed.environment.riCoveragePercent) {
+        return @{ percent = [math]::Max(0, [math]::Min(100, [double]$Observed.environment.riCoveragePercent))
+                  source = 'observed'; needsManual = $false
+                  message = ("RI/Savings-Plan coverage: {0}% (supplied in observed data)." -f [double]$Observed.environment.riCoveragePercent) }
+    }
+    $rc = if ($Enrichment) { $Enrichment.reservationCoverage } else { $null }
+    if ($rc -and $rc.status -eq 'confirmed-none') {
+        return @{ percent = 0; source = 'azure-confirmed-none'; needsManual = $false
+                  message = 'RI/Savings-Plan coverage: 0% (Azure confirms the customer owns none).' }
+    }
+    if ($rc -and $rc.status -eq 'detected-needs-manual') {
+        return @{ percent = $default; source = 'assumed-default'; needsManual = $true
+                  message = ("ACTION NEEDED - {0} Assuming {1}% coverage until then, so compute savings may be OVERSTATED." -f $rc.message, $default) }
+    }
+    if ($rc -and $rc.status -eq 'could-not-check') {
+        return @{ percent = $default; source = 'assumed-default'; needsManual = $true
+                  message = ("ACTION NEEDED - could not read reservations from Azure ({0}). Assuming {1}% coverage; if the customer has RIs/Savings Plans, set riCoveragePercent in observed data or compute savings will be OVERSTATED." -f $rc.message, $default) }
+    }
+    # No enrichment ran at all.
+    return @{ percent = $default; source = 'assumed-default'; needsManual = $true
+              message = ("RI/Savings-Plan coverage not supplied - assuming {0}%. Confirm the customer has none, or set riCoveragePercent in observed data." -f $default) }
+}
+
 function Get-NmeUncoveredFraction {
     <#
       Fraction of a pool's compute NOT already covered by an RI/Savings Plan.
@@ -67,15 +103,12 @@ function Get-NmeUncoveredFraction {
     param($HostPool, [hashtable]$Ctx)
     $pct = $null
     $name = $HostPool.ref.name
+    # Per-pool observed value overrides the environment-level figure.
     if ($Ctx.observed -and $Ctx.observed.hostPools) {
         $po = @($Ctx.observed.hostPools) | Where-Object { $_.name -eq $name } | Select-Object -First 1
         if ($po -and $po.PSObject.Properties['riCoveragePercent'] -and $null -ne $po.riCoveragePercent) { $pct = [double]$po.riCoveragePercent }
     }
-    if ($null -eq $pct -and $Ctx.observed -and $Ctx.observed.environment -and
-        $Ctx.observed.environment.PSObject.Properties['riCoveragePercent'] -and $null -ne $Ctx.observed.environment.riCoveragePercent) {
-        $pct = [double]$Ctx.observed.environment.riCoveragePercent
-    }
-    if ($null -eq $pct) { $pct = [double]$Ctx.assum.commitDiscount.defaultCoveragePercent }
+    if ($null -eq $pct) { $pct = [double]$Ctx.coverage.percent }
     $pct = [math]::Max(0, [math]::Min(100, $pct))
     return @{ fraction = (1 - $pct / 100); coveragePct = $pct }
 }
@@ -319,12 +352,7 @@ function Measure-CommitDiscount {
     if ($Ctx.assum.commitDiscount.enabled -ne $true) { return $null }
 
     # Environment-level existing coverage (RI/SP are bought at subscription/tenant level).
-    $covPct = [double]$Ctx.assum.commitDiscount.defaultCoveragePercent
-    if ($Ctx.observed -and $Ctx.observed.environment -and
-        $Ctx.observed.environment.PSObject.Properties['riCoveragePercent'] -and $null -ne $Ctx.observed.environment.riCoveragePercent) {
-        $covPct = [double]$Ctx.observed.environment.riCoveragePercent
-    }
-    $covPct = [math]::Max(0, [math]::Min(100, $covPct))
+    $covPct = [math]::Max(0, [math]::Min(100, [double]$Ctx.coverage.percent))
     $uncovered = 1 - $covPct / 100
 
     # Aggregate the recommended always-on floor by VM size.
@@ -528,10 +556,13 @@ function Get-NmeCostAnalysis {
     $hoursActive = [double]$Assumptions.workingHours.hoursPerDay * [double]$Assumptions.workingHours.daysPerWeek * $weeksPerMonth
     $hoursOff = [double]$Assumptions.hoursPerMonth - $hoursActive
 
+    $coverage = Get-NmeCoverageContext -Observed $Observed -Enrichment $Enrichment -Assumptions $Assumptions
+
     $ctx = @{
         assum = $Assumptions; observed = $Observed; enrichment = $Enrichment
         cache = $PricingCache; currency = $currency; ttlDays = $ttlDays
         hoursActive = $hoursActive; hoursOff = $hoursOff
+        coverage = $coverage
         rates = @{}; regions = @{}
     }
 
@@ -601,6 +632,7 @@ function Get-NmeCostAnalysis {
         tiersPresent = @($tiers)
         plays = $plays.ToArray()
         realised = $realised
+        coverage = [pscustomobject]$coverage
         totals = Get-NmeCostTotals -Plays $plays.ToArray() -Assumptions $Assumptions
         screenshots = if ($Observed -and $Observed.screenshots) { @($Observed.screenshots) } else { @() }
     }

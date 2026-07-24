@@ -23,6 +23,12 @@ Adds a customer-facing **Cost Optimisation** section to the report: a headline m
 
 **Reserved Instances / Savings Plans** are handled both ways. Existing coverage (set `riCoveragePercent` in observed data, per-environment or per-pool) *deflates* the auto-scale / pre-stage / rolling-drain savings — powering off pre-paid capacity saves nothing. Separately, the **commit-discount** play prices the genuine 24×7 base (auto-scale on with a ≥1-host floor) at 1-year and 3-year compute Savings Plan rates, and surfaces any Azure Advisor reservation recommendations when enrichment runs. It never recommends committing capacity that auto-scale powers off, and never suggests a reservation for an unmanaged/deallocated pool (that needs auto-scale first).
 
+Coverage is resolved with clear precedence and the basis is always stated (console, a note box in the report, and the cost-analysis JSON):
+
+1. **Supplied** — `riCoveragePercent` in observed data. Green note, used as-is.
+2. **Azure-confirmed-none** — enrichment read the tenant's reservations and found none. Green note, 0% is correct.
+3. **Assumed default** — reservations were detected but no % supplied, Azure couldn't be read (needs **Reservation Reader** / **Cost Management Reader** at tenant scope, beyond subscription Reader), or nothing was supplied. **Amber "Action needed"** note flags that compute savings may be overstated until you capture the real figure. The enrichment auto-installs the `reservation` az extension and detects the exact case, but a trustworthy coverage **%** is never fabricated — you set it in observed data.
+
 Every figure carries an **evidence tier**:
 
 | Tier | Source | Shown as |

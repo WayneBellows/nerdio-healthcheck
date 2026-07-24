@@ -140,6 +140,10 @@ if (($Assess -or $Report -or $FromFile) -and $env) {
         $tot = $costAnalysisResult.totals
         Write-Host ("`nEstimated savings opportunity: {0:N0}-{1:N0} {2}/month ({3} quantified play(s))" -f `
             $tot.monthlyLow, $tot.monthlyTypical, $costAnalysisResult.currency, $tot.quantifiedPlays) -ForegroundColor Cyan
+        if ($costAnalysisResult.coverage) {
+            $cvColour = if ($costAnalysisResult.coverage.needsManual) { 'Yellow' } else { 'Green' }
+            Write-Host ("  {0}" -f $costAnalysisResult.coverage.message) -ForegroundColor $cvColour
+        }
         foreach ($p in ($costAnalysisResult.plays | Where-Object quantified | Sort-Object monthlyTypical -Descending)) {
             Write-Host ("  {0,-26} {1,-20} [{2}] {3,10:N2}-{4,10:N2} /mo" -f $p.id, $p.scope, $p.tier, $p.monthlyLow, $p.monthlyTypical)
         }

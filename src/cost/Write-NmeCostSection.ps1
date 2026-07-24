@@ -48,6 +48,13 @@ function Write-NmeCostSection {
   .tierlegend{display:flex; gap:14px; flex-wrap:wrap; margin:0 0 22px; font-size:12px; color:var(--slate-500);}
   .tierlegend .tl{display:flex; align-items:center; gap:8px; background:var(--bg-surface); border:1px solid var(--border);
                   border-radius:var(--radius-full); padding:6px 14px 6px 8px;}
+  .covnote{border-radius:var(--radius-lg); padding:12px 16px; margin:0 0 22px; font-size:13px; line-height:1.5;
+           border:1px solid var(--border); background:var(--bg-surface);}
+  .covnote.ok{border-left:4px solid var(--success-500);}
+  .covnote.action{border-left:4px solid var(--warning-500); background:#FFFBEB;}
+  .covnote .h{font-family:var(--font-sans); font-weight:700; font-size:12px; text-transform:uppercase;
+              letter-spacing:0.04em; margin-right:6px;}
+  .covnote.action .h{color:#B54708;}
   .realised{display:flex; align-items:center; gap:16px; background:var(--bg-surface); border:1px solid var(--border);
             border-left:4px solid var(--success-500); border-radius:var(--radius-lg); padding:14px 18px; margin:0 0 22px;
             box-shadow:var(--shadow-sm);}
@@ -125,6 +132,14 @@ function Write-NmeCostSection {
         $null = $sb.AppendLine("  <span class='tl'><span class='badge' style='background:$($tm.bg);color:$($tm.fg)'>$($tm.label)</span>$($tm.desc)</span>")
     }
     $null = $sb.AppendLine('</div>')
+
+    # ---- Reservations / Savings Plan coverage basis ----
+    if ($ca.coverage) {
+        $cv = $ca.coverage
+        $cls = if ($cv.needsManual) { 'action' } else { 'ok' }
+        $hdr = if ($cv.needsManual) { 'Action needed' } else { 'Reservations / Savings Plans' }
+        $null = $sb.AppendLine("<div class='covnote $cls'><span class='h'>$hdr</span>$(ConvertTo-HtmlText $cv.message)</div>")
+    }
 
     # ---- Realised value strip (Tier 1) ----
     if ($ca.realised) {

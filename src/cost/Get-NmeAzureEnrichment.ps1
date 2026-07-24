@@ -207,6 +207,57 @@ function Get-NmeAzureFilesUsage {
     return $out.ToArray()
 }
 
+function Get-NmeReservationCoverage {
+    <#
+      Detect existing Reserved Instances / Savings Plans across the subscriptions.
+      az can reliably tell us WHETHER reservations exist, but a trustworthy
+      coverage % (share of session-host usage covered) is not cleanly derivable
+      from the CLI - so we detect presence and return a status the caller acts on,
+      never a fabricated percentage. Reservation/Savings-plan inventory needs a
+      tenant/billing-scoped role (Reservation Reader) beyond subscription Reader.
+
+      Returns @{ status; reservations[]; message } where status is one of:
+        'confirmed-none'      - could read, customer owns none (0% is correct)
+        'detected-needs-manual' - reservations found; capture the coverage % manually
+        'could-not-check'     - no permission / extension / other error
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string[]]$SubscriptionIds)
+
+    if (-not (Test-NmeAzExtension -Name 'reservation')) {
+        return @{ status = 'could-not-check'; reservations = @(); message = 'az reservation extension unavailable.' }
+    }
+
+    # Reservation orders are tenant-scoped (not per-subscription); one call covers the tenant.
+    $orders = Invoke-NmeAz -Arguments @('reservations', 'reservation-order', 'list')
+    if ($null -eq $orders) {
+        return @{ status = 'could-not-check'; reservations = @()
+                  message = 'Could not read reservations - needs the Reservation Reader (or Cost Management Reader) role at tenant/billing scope, which subscription Reader does not include.' }
+    }
+
+    $res = [System.Collections.Generic.List[object]]::new()
+    foreach ($o in @($orders)) {
+        foreach ($r in @($o.reservations)) {
+            $res.Add([pscustomobject]@{
+                orderId = "$($o.name)"
+                sku     = "$($o.displayName)"
+                term    = "$($o.term)"
+                state   = "$($o.provisioningState)"
+            })
+        }
+        if (-not $o.reservations) {
+            $res.Add([pscustomobject]@{ orderId = "$($o.name)"; sku = "$($o.displayName)"; term = "$($o.term)"; state = "$($o.provisioningState)" })
+        }
+    }
+
+    if ($res.Count -eq 0) {
+        return @{ status = 'confirmed-none'; reservations = @()
+                  message = 'Azure confirms no Reserved Instances / Savings Plans - 0% coverage is correct, no deflation applied.' }
+    }
+    return @{ status = 'detected-needs-manual'; reservations = $res.ToArray()
+              message = ("Azure shows {0} reservation/savings-plan order(s). Capture the coverage % from the Azure portal (or NME RI Analytics) and set riCoveragePercent in observed data so the compute savings are deflated correctly." -f $res.Count) }
+}
+
 function Get-NmeAzureEnrichment {
     <# Orchestrator. Returns $null when az is unavailable; otherwise a best-effort bundle. #>
     [CmdletBinding()]
@@ -232,9 +283,11 @@ function Get-NmeAzureEnrichment {
         if (-not $law) { $law = Get-NmeLawIngestion -SubscriptionId $sub }
     }
     $files = Get-NmeAzureFilesUsage -StorageLocations $Environment.storageLocations
+    $reservationCoverage = Get-NmeReservationCoverage -SubscriptionIds $subs
 
     Write-Host ("  Azure enrichment: {0} advisor rec(s), {1} disk(s), LAW data: {2}, {3} share(s)." -f `
         $advisor.Count, $disks.Count, $(if ($law) { "$($law.uidGbPerMonth) GB UID / $($law.totalGbPerMonth) GB total" } else { 'none' }), @($files).Count)
+    Write-Host ("  RI/Savings Plan check: {0}" -f $reservationCoverage.message) -ForegroundColor $(if ($reservationCoverage.status -eq 'confirmed-none') { 'Green' } else { 'DarkYellow' })
 
     [pscustomobject]@{
         collectedAt  = (Get-Date).ToString('o')
@@ -243,5 +296,6 @@ function Get-NmeAzureEnrichment {
         disks        = $disks.ToArray()
         lawIngestion = $law
         azureFiles   = $files
+        reservationCoverage = $reservationCoverage
     }
 }
