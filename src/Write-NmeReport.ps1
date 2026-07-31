@@ -100,6 +100,12 @@ function Write-NmeReport {
   .meta{text-align:right; font-size:13px; color:var(--slate-500); line-height:1.7;}
   .meta strong{color:var(--slate-700); font-weight:600;}
 
+  /* Incomplete-evidence notice */
+  .incomplete{background:#FFFAEB; border:1px solid #FEDF89; border-left:4px solid #B54708;
+              border-radius:var(--radius-lg); padding:16px 20px; margin:0 0 24px;}
+  .incomplete .eyebrow{color:#B54708;}
+  .incomplete p{margin-top:6px; font-size:13px; line-height:1.6; color:var(--slate-700); max-width:900px;}
+
   /* Health score banner */
   .scorebar{display:flex; align-items:center; gap:28px; background:var(--bg-surface);
             border:1px solid var(--border); border-radius:var(--radius-lg);
@@ -234,6 +240,21 @@ function Write-NmeReport {
   </div>
 </div>
 "@)
+
+    # ---- Evidence completeness notice ----
+    # Checks that could not run carry no penalty, so an incomplete assessment must
+    # say so next to the score rather than presenting it as a clean result.
+    if ($health.PSObject.Properties['complete'] -and -not $health.complete) {
+        $gapList = ConvertTo-HtmlText ((@($health.gapAreas) | Sort-Object) -join ', ')
+        $null = $sb.AppendLine(@"
+<div class="incomplete">
+  <div class="eyebrow">Provisional Score - Incomplete Evidence</div>
+  <p>Some of the environment could not be read, so these areas were not assessed: <strong>$gapList</strong>.
+  Unassessed checks carry no score penalty, which means the score above can only overstate health, never understate it.
+  Treat it as provisional until the API client has access to every area and the assessment is re-run.</p>
+</div>
+"@)
+    }
 
     # ---- Summary cards ----
     $null = $sb.AppendLine('<div class="cards">')
