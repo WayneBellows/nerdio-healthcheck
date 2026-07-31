@@ -116,6 +116,56 @@ function Get-NmeStorageLocations {
     return $locations.Values | Sort-Object account, share
 }
 
+function Get-NmeCollectionSummary {
+    <#
+      Turn the session's failed reads into a per-area evidence gap list. The
+      assessment must be able to say which parts of the environment it could not
+      see, so a run that read less is never mistaken for a run that found less.
+    #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][psobject]$Session)
+
+    $areaFor = {
+        param([string]$p)
+        switch -Regex ($p) {
+            '/deployment/current'   { 'Version & Supportability'; break }
+            '/auto-scale-profile'   { 'Auto-Scale'; break }
+            '/auto-scale$'          { 'Auto-Scale'; break }
+            '/fslogix$'             { 'FSLogix'; break }
+            '/host$'                { 'Session Hosts'; break }
+            '/workspace'            { 'Workspaces & Host Pool Discovery'; break }
+            '/resourcegroup'        { 'Resource Groups'; break }
+            '/arm/hostpool/'        { 'Host Pool Configuration'; break }
+            '/desktop-image'        { 'Images'; break }
+            '/app-management|/shell-app|/app-attach' { 'App Delivery'; break }
+            '/scripted-actions'     { 'Automation'; break }
+            '/notifications/'       { 'Notifications'; break }
+            '/users-and-roles/'     { 'RBAC'; break }
+            '/usages/'              { 'Usage'; break }
+            '/storage/'             { 'Storage'; break }
+            default                 { 'Other' }
+        }
+    }
+
+    [array]$failures = @()
+    if ($Session.PSObject.Properties['Failures'] -and $Session.Failures) { $failures = @($Session.Failures) }
+
+    $gaps = foreach ($grp in ($failures | Group-Object { & $areaFor $_.path })) {
+        [pscustomobject]@{
+            area     = $grp.Name
+            count    = $grp.Count
+            statuses = @($grp.Group.status | Where-Object { $_ } | Sort-Object -Unique)
+            paths    = @($grp.Group.path | Sort-Object -Unique)
+        }
+    }
+
+    [pscustomobject]@{
+        complete     = ($failures.Count -eq 0)
+        failedReads  = $failures.Count
+        gaps         = @($gaps | Sort-Object area)
+    }
+}
+
 function Get-NmeEnvironment {
     [CmdletBinding()]
     param([Parameter(Mandatory)][psobject]$Session)
@@ -159,9 +209,16 @@ function Get-NmeEnvironment {
     [array]$roleAssignments = Invoke-NmeApi -Session $Session -Path '/api/v1/users-and-roles/assignment'
     $workspaceUsage  = Invoke-NmeApi -Session $Session -Path '/api/v1/usages/arm/workspace'
 
+    $collection = Get-NmeCollectionSummary -Session $Session
+    if (-not $collection.complete) {
+        Write-Warning ("Evidence incomplete: {0} read(s) failed across {1} area(s) - {2}. The assessment will be marked provisional." -f `
+            $collection.failedReads, @($collection.gaps).Count, (@($collection.gaps.area) -join ', '))
+    }
+
     [pscustomobject]@{
         collectedAt        = (Get-Date).ToString('o')
         baseUrl            = $Session.BaseUrl
+        collection         = $collection
         deployment         = $deployment
         workspaces         = $workspaces
         resourceGroups     = $resourceGroups

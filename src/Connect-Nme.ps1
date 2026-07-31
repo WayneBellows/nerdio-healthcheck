@@ -46,10 +46,13 @@ function Connect-Nme {
     if (-not $resp.access_token) { throw 'Token response contained no access_token.' }
 
     # Session object carried through the run. Secret is not retained here.
+    # Failures records every read the API refused or could not serve, so the
+    # assessment can declare what it could not see rather than scoring around it.
     [pscustomobject]@{
         BaseUrl     = $Config.baseUrl
         Token       = $resp.access_token
         TokenExpiry = (Get-Date).AddSeconds([int]($resp.expires_in | ForEach-Object { $_ -as [int] }) - 60)
+        Failures    = [System.Collections.Generic.List[object]]::new()
     }
 }
 
@@ -77,6 +80,15 @@ function Invoke-NmeApi {
         try { $status = [int]$_.Exception.Response.StatusCode } catch {}
         if (-not $Quiet) {
             Write-Warning "GET $Path failed$(if($status){" (HTTP $status)"}): $($_.Exception.Message)"
+            # Quiet calls are bounded probes where a 404 is the expected answer, so they
+            # are not evidence gaps. Everything else is.
+            if ($Session.PSObject.Properties['Failures'] -and $Session.Failures) {
+                $Session.Failures.Add([pscustomobject]@{
+                    path    = $Path
+                    status  = $status
+                    message = "$($_.Exception.Message)"
+                })
+            }
         }
         return $null
     }

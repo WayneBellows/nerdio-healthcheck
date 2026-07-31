@@ -76,7 +76,10 @@ if ($FromFile) {
         Write-Host "  AVD agent ver  : $($dep.avdAgentVersion)"
         Write-Host "  FSLogix ver    : $($dep.fsLogixVersion)"
     } else {
-        Write-Warning '  Could not read deployment info.'
+        # The deployment read is the capability probe: no answer here means the
+        # credentials cannot see the environment, and every later check would be
+        # assessing an absence rather than a configuration. Stop instead.
+        throw 'Could not read /api/v1/deployment/current. The token was accepted but the environment cannot be read - check the API client permissions and the base URL. Refusing to run a partial assessment.'
     }
     Write-Host "`nPhase 0 complete." -ForegroundColor Cyan
 

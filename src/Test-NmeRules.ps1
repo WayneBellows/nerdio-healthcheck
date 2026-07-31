@@ -308,6 +308,23 @@ function Get-NmeFindings {
             -Rationale 'A large named-vs-active gap signals adoption headroom.' -Reference '' -Observed $u))
     }
 
+    # ---------- Evidence gaps (reads the API refused or could not serve) ----------
+    # A failed read is not a pass. Surface it so an incomplete run is visibly
+    # incomplete rather than quietly scoring better than a complete one.
+    # Environments collected before evidence tracking existed carry no collection block.
+    $collectionGaps = @()
+    if ($env.PSObject.Properties['collection'] -and $env.collection) { $collectionGaps = @($env.collection.gaps) }
+    foreach ($gap in ($collectionGaps | Where-Object { $_ })) {
+        $statusTxt = if (@($gap.statuses).Count) { "HTTP $((@($gap.statuses)) -join '/')" } else { 'no response' }
+        $f.Add((New-Finding -Id "collection-gap-$(($gap.area -replace '[^A-Za-z0-9]','-').ToLower())" `
+            -Area $gap.area -Severity 'Manual' -Scope 'Environment' `
+            -Title "$($gap.area): evidence unavailable" `
+            -Observation "$($gap.count) read(s) failed ($statusTxt), so this area was not assessed." `
+            -Recommendation 'Confirm the API client has permission for this area and re-run, or review these settings in the NME console. Do not read the absence of findings here as a pass.' `
+            -Rationale 'Checks that could not run carry no score penalty, so unread areas must be declared explicitly.' `
+            -Reference '' -Observed $gap.paths))
+    }
+
     # ---------- Manual checks (telemetry not in REST API) ----------
     foreach ($m in $Rules.manualChecks) {
         $f.Add((New-Finding -Id $m.id -Area $m.area -Severity 'Manual' -Scope 'Environment' `
@@ -338,10 +355,29 @@ function Get-NmeHealthScore {
 
     $grade = $sc.grades | Where-Object { $score -ge $_.min } | Select-Object -First 1
 
+    # Only findings that could actually be evaluated deduct points, so a run that
+    # failed reads would otherwise score higher than one that read everything.
+    # Report the score as provisional and name the areas behind it.
+    $complete = $true
+    $gapAreas = @()
+    if ($Environment.PSObject.Properties['collection'] -and $Environment.collection -and `
+        $Environment.collection.PSObject.Properties['complete']) {
+        $complete = [bool]$Environment.collection.complete
+        $gapAreas = @($Environment.collection.gaps | Where-Object { $_ } | ForEach-Object { $_.area })
+    }
+    $label = $grade.label
+    $color = $grade.color
+    if (-not $complete) {
+        $label = "Provisional - $($grade.label)"
+        $color = '#B54708'   # warning: the number is not yet trustworthy
+    }
+
     [pscustomobject]@{
         score    = [int]$score
-        label    = $grade.label
-        color    = $grade.color
+        label    = $label
+        color    = $color
+        complete = $complete
+        gapAreas = $gapAreas
         penalty  = [math]::Round($penalty, 1)
         perPool  = [math]::Round($perPool, 1)
         required = $summary.Required
